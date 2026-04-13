@@ -450,6 +450,29 @@ void drawMenu(String title, const String items[], int len, int selected)
   display.display();
 }
 
+void drawStatusPopup(const String &status)
+{
+  if (status.length() == 0)
+    return;
+
+  String shown = status;
+  if (shown.length() > 20)
+    shown = shown.substring(0, 20) + "...";
+
+  int x = 6;
+  int y = 20;
+  int w = 116;
+  int h = 22;
+
+  display.setColor(BLACK);
+  display.fillRect(x, y, w, h);
+  display.setColor(WHITE);
+  display.drawRect(x, y, w, h);
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(64, 27, shown);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+}
+
 // ==========================================
 // SD CARD ENGINES (MEMORY SAFE)
 // ==========================================
@@ -1235,7 +1258,14 @@ void uiTask(void *pvParameters)
       else
       {
         drawMenu(current_target_device + " Remote", univ_cmd_items, univ_cmd_count, menu_index);
-        display.drawString(0, 52, snap.status);
+        bool showPopup = snap.status.startsWith("Sending") ||
+                         snap.status.startsWith("Sent") ||
+                         snap.status.startsWith("Missing") ||
+                         snap.status.startsWith("Unsupported") ||
+                         snap.status.startsWith("Command") ||
+                         snap.status.startsWith("No cmds");
+        if (showPopup)
+          drawStatusPopup(snap.status);
         display.display();
       }
     }
