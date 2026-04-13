@@ -10,6 +10,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include "ui_layout.h"
 
 // ==========================================
 // PIN DEFINITIONS
@@ -172,13 +173,51 @@ SharedState shared = {
     "",
     LEARN_IDLE};
 
-const uint16_t UNIVERSAL_SEND_DELAY_MS = 90;
-const uint8_t UNIVERSAL_TRANSMIT_REPEATS = 2;
-const uint8_t UNIVERSAL_LOAD_RETRIES = 2;
-const uint16_t UNIVERSAL_REPEAT_GAP_MS = 45;
+const uint16_t UNIVERSAL_SEND_DELAY_MS = 120;
+const uint8_t UNIVERSAL_TRANSMIT_REPEATS = 1;
+const uint8_t UNIVERSAL_LOAD_RETRIES = 3;
+const uint16_t UNIVERSAL_REPEAT_GAP_MS = 80;
+const uint8_t PROTOCOL_FRAME_REPEAT = 1;
+
+enum UniversalSendMode
+{
+  UNIV_MODE_SINGLE,
+  UNIV_MODE_AGGRESSIVE
+};
+UniversalSendMode universal_mode = UNIV_MODE_SINGLE;
+
+const uint16_t AGGR_SEND_DELAY_MS = 180;
+const uint8_t AGGR_TRANSMIT_REPEATS = 2;
+const uint8_t AGGR_LOAD_RETRIES = 3;
+const uint16_t AGGR_REPEAT_GAP_MS = 80;
+const uint8_t AGGR_PROTOCOL_FRAME_REPEAT = 1;
+
+const uint16_t SINGLE_SEND_DELAY_MS = 120;
+const uint8_t SINGLE_TRANSMIT_REPEATS = 1;
+const uint8_t SINGLE_LOAD_RETRIES = 2;
+const uint16_t SINGLE_REPEAT_GAP_MS = 60;
+const uint8_t SINGLE_PROTOCOL_FRAME_REPEAT = 0;
+
 volatile bool univ_cancel_requested = false;
 
 String display_items_buffer[MAX_DIR_ITEMS];
+
+const int UI_HEADER_Y = 0;
+const int UI_DIVIDER_Y = 12;
+const int UI_LIST_START_Y = 16;
+const int UI_LIST_STEP_Y = 12;
+const int UI_LINE_1_Y = 20;
+const int UI_LINE_2_Y = 32;
+const int UI_LINE_3_Y = 44;
+const int UI_FOOTER_Y = 54;
+
+bool headerModeSelected = false;
+
+uint16_t currentSendDelayMs = UNIVERSAL_SEND_DELAY_MS;
+uint8_t currentTransmitRepeats = UNIVERSAL_TRANSMIT_REPEATS;
+uint8_t currentLoadRetries = UNIVERSAL_LOAD_RETRIES;
+uint16_t currentRepeatGapMs = UNIVERSAL_REPEAT_GAP_MS;
+uint8_t currentProtocolFrameRepeat = PROTOCOL_FRAME_REPEAT;
 
 // ==========================================
 // HELPER FUNCTIONS
@@ -193,7 +232,7 @@ void displayReset(void)
   pinMode(RST_OLED, OUTPUT);
   digitalWrite(RST_OLED, HIGH);
   delay(1);
-  digitalWrite(RST_OLED, LOW);
+      digitalWrite(RST_OLED, LOW);
   delay(1);
   digitalWrite(RST_OLED, HIGH);
   delay(1);
@@ -267,6 +306,40 @@ bool isUniversalCancelRequested()
   v = univ_cancel_requested;
   unlockState();
   return v;
+}
+
+String getUniversalModeLabel()
+{
+  if (universal_mode == UNIV_MODE_AGGRESSIVE)
+    return "Aggressive";
+  return "Single";
+}
+
+String getUniversalModeBadge()
+{
+  if (universal_mode == UNIV_MODE_AGGRESSIVE)
+    return "AGGR";
+  return "SING";
+}
+
+void applyUniversalModeSettings()
+{
+  if (universal_mode == UNIV_MODE_AGGRESSIVE)
+  {
+    currentSendDelayMs = AGGR_SEND_DELAY_MS;
+    currentTransmitRepeats = AGGR_TRANSMIT_REPEATS;
+    currentLoadRetries = AGGR_LOAD_RETRIES;
+    currentRepeatGapMs = AGGR_REPEAT_GAP_MS;
+    currentProtocolFrameRepeat = AGGR_PROTOCOL_FRAME_REPEAT;
+  }
+  else
+  {
+    currentSendDelayMs = SINGLE_SEND_DELAY_MS;
+    currentTransmitRepeats = SINGLE_TRANSMIT_REPEATS;
+    currentLoadRetries = SINGLE_LOAD_RETRIES;
+    currentRepeatGapMs = SINGLE_REPEAT_GAP_MS;
+    currentProtocolFrameRepeat = SINGLE_PROTOCOL_FRAME_REPEAT;
+  }
 }
 
 void setPayload(const uint16_t *raw, uint16_t len, uint16_t freqKHz, const String &btnName)
@@ -469,81 +542,6 @@ String getParentDir(String path)
   if (lastSlash == 0)
     return "/";
   return path.substring(0, lastSlash);
-}
-
-void drawMenu(String title, const String items[], int len, int selected)
-{
-  display.clear();
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-  display.drawString(0, 0, title);
-  display.drawLine(0, 12, 128, 12);
-
-  int start_idx = max(0, selected - 1);
-  if (start_idx > len - 3 && len >= 3)
-    start_idx = len - 3;
-
-  for (int i = 0; i < 3; i++)
-  {
-    int item_idx = start_idx + i;
-    if (item_idx >= len)
-      break;
-
-    int y_pos = 16 + (i * 12);
-    if (item_idx == selected)
-      display.drawString(0, y_pos, "> " + items[item_idx]);
-    else
-      display.drawString(8, y_pos, items[item_idx]);
-  }
-  display.drawString(0, 52, "[<] Back | [BTN] Select");
-  display.display();
-}
-
-void drawStatusPopup(const String &status)
-{
-  if (status.length() == 0)
-    return;
-
-  String shown = status;
-  if (shown.length() > 20)
-    shown = shown.substring(0, 20) + "...";
-
-  int x = 6;
-  int y = 20;
-  int w = 116;
-  int h = 22;
-
-  display.setColor(BLACK);
-  display.fillRect(x, y, w, h);
-  display.setColor(WHITE);
-  display.drawRect(x, y, w, h);
-  display.setTextAlignment(TEXT_ALIGN_CENTER);
-  display.drawString(64, 27, shown);
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
-}
-
-void drawUniversalProgressPopup(const String &name, int current, int total)
-{
-  if (total <= 0)
-    return;
-
-  String shown = name;
-  if (shown.length() > 12)
-    shown = shown.substring(0, 12);
-
-  String text = shown + " " + String(current) + "/" + String(total);
-
-  int x = 12;
-  int y = 20;
-  int w = 104;
-  int h = 24;
-
-  display.setColor(BLACK);
-  display.fillRect(x, y, w, h);
-  display.setColor(WHITE);
-  display.drawRect(x, y, w, h);
-  display.setTextAlignment(TEXT_ALIGN_CENTER);
-  display.drawString(64, 28, text);
-  display.setTextAlignment(TEXT_ALIGN_LEFT);
 }
 
 // ==========================================
@@ -979,33 +977,49 @@ bool transmitCurrentPayload()
     {
       uint32_t data = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
                       ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
-      irsend.sendSAMSUNG(data, 32);
+      irsend.sendSAMSUNG(data, 32, currentProtocolFrameRepeat);
     }
     else if (p == "NECEXT")
     {
       uint32_t data = ((uint32_t)cmd16 << 16) | (uint32_t)addr16;
-      irsend.sendNEC(data, 32);
+      irsend.sendNEC(data, 32, currentProtocolFrameRepeat);
+
+      if (universal_mode == UNIV_MODE_AGGRESSIVE)
+      {
+        vTaskDelay(pdMS_TO_TICKS(25));
+        uint32_t std = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
+                       ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
+        irsend.sendNEC(std, 32, currentProtocolFrameRepeat);
+      }
     }
     else if (p == "NEC")
     {
-      uint32_t data = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
-                      ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
-      irsend.sendNEC(data, 32);
+      // NEC standard form (addr, ~addr, cmd, ~cmd).
+      uint32_t std = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
+                     ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
+      irsend.sendNEC(std, 32, currentProtocolFrameRepeat);
+
+      if (universal_mode == UNIV_MODE_AGGRESSIVE)
+      {
+        vTaskDelay(pdMS_TO_TICKS(25));
+        uint32_t ext = ((uint32_t)cmd16 << 16) | (uint32_t)addr16;
+        irsend.sendNEC(ext, 32, currentProtocolFrameRepeat);
+      }
     }
     else if (p == "RC5")
     {
       uint16_t data = (uint16_t)(((addr8 & 0x1F) << 6) | (cmd8 & 0x3F));
-      irsend.sendRC5(data, 12);
+      irsend.sendRC5(data, 12, currentProtocolFrameRepeat);
     }
     else if (p == "RC6")
     {
       uint32_t data = ((uint32_t)(addr8 & 0xFF) << 8) | (uint32_t)(cmd8 & 0xFF);
-      irsend.sendRC6(data, 20);
+      irsend.sendRC6(data, 20, currentProtocolFrameRepeat);
     }
     else if (p == "SIRC" || p == "SONY")
     {
       uint16_t data = (uint16_t)((cmd8 & 0x7F) | ((addr8 & 0x1F) << 7));
-      irsend.sendSony(data, 12);
+      irsend.sendSony(data, 12, currentProtocolFrameRepeat);
     }
     else
     {
@@ -1084,6 +1098,8 @@ void uiTask(void *pvParameters)
     {
       if (yVal < 1000)
       {
+        if (current_state == MENU_UNIV_REMOTE)
+          headerModeSelected = false;
         if (current_state == APP_REMOTE_VIEW)
         {
           if (remote_cmd_index > 1)
@@ -1100,6 +1116,8 @@ void uiTask(void *pvParameters)
       }
       if (yVal > 3000)
       {
+        if (current_state == MENU_UNIV_REMOTE)
+          headerModeSelected = false;
         if (current_state == APP_REMOTE_VIEW)
         {
           if (remote_cmd_index < remote_cmd_count)
@@ -1114,9 +1132,21 @@ void uiTask(void *pvParameters)
           menu_index++;
         last_joy_time = current_time;
       }
+      if (xVal > 3000)
+      {
+        if (current_state == MENU_UNIV_REMOTE)
+        {
+          headerModeSelected = true;
+          last_joy_time = current_time;
+        }
+      }
       if (xVal < 1000)
       {
-        if (current_state == MENU_UNIV_REMOTE || current_state == APP_LEARN || current_state == APP_FILE_BROWSER)
+        if (current_state == MENU_UNIV_REMOTE && headerModeSelected)
+        {
+          headerModeSelected = false;
+        }
+        else if (current_state == MENU_UNIV_REMOTE || current_state == APP_LEARN || current_state == APP_FILE_BROWSER)
         {
           if (current_state == APP_LEARN)
             queueCommand(IR_CMD_LEARN_STOP);
@@ -1156,6 +1186,21 @@ void uiTask(void *pvParameters)
       }
       else if (current_state == MENU_UNIV_REMOTE)
       {
+        if (headerModeSelected)
+        {
+          if (universal_mode == UNIV_MODE_SINGLE)
+            universal_mode = UNIV_MODE_AGGRESSIVE;
+          else
+            universal_mode = UNIV_MODE_SINGLE;
+
+          applyUniversalModeSettings();
+          setStatus("Mode: " + getUniversalModeLabel());
+          headerModeSelected = false;
+          lastBtnState = currentBtnState;
+          vTaskDelay(pdMS_TO_TICKS(33));
+          continue;
+        }
+
         if (menu_index == 0)
           current_target_device = "TV";
         if (menu_index == 1)
@@ -1262,6 +1307,10 @@ void uiTask(void *pvParameters)
         queueCommand(IR_CMD_LEARN_START);
         setStatus("Point remote and press key");
       }
+      if (current_state == MENU_UNIV_REMOTE)
+      {
+        headerModeSelected = false;
+      }
       if (previousState == APP_LEARN && current_state != APP_LEARN)
       {
         queueCommand(IR_CMD_LEARN_STOP);
@@ -1283,7 +1332,10 @@ void uiTask(void *pvParameters)
         menu_index = univ_menu_len - 1;
       if (menu_index >= univ_menu_len)
         menu_index = 0;
-      drawMenu("Universal Remote", univ_menu, univ_menu_len, menu_index);
+      String local_univ_menu[MAX_UNIV_ITEMS];
+      for (int i = 0; i < univ_menu_len; i++)
+        local_univ_menu[i] = univ_menu[i];
+      drawMenu("Universal Remote", local_univ_menu, univ_menu_len, menu_index, "[v^]Scroll [>]Mode [BTN]Toggle/Pick [<]Back", getUniversalModeBadge(), true, headerModeSelected);
     }
     else if (current_state == APP_FILE_BROWSER)
     {
@@ -1297,10 +1349,9 @@ void uiTask(void *pvParameters)
       if (dir_item_count == 0)
       {
         display.clear();
-        display.drawString(0, 0, "Path: " + current_path);
-        display.drawLine(0, 12, 128, 12);
-        display.drawString(0, 24, "(No items)");
-        display.drawString(0, 52, "[<] Back");
+        drawHeader("Path: " + current_path);
+        display.drawString(0, UI_LINE_1_Y + 4, "(No items)");
+        drawFooter("[<] Back");
         display.display();
       }
       else
@@ -1326,17 +1377,15 @@ void uiTask(void *pvParameters)
       if (univ_cmd_count <= 0)
       {
         display.clear();
-        display.setTextAlignment(TEXT_ALIGN_LEFT);
-        display.drawString(0, 0, current_target_device + " Remote");
-        display.drawLine(0, 12, 128, 12);
-        display.drawString(0, 24, "No commands found");
-        display.drawString(0, 36, "File: " + univ_profile_path);
-        display.drawString(0, 52, "[<] Back");
+        drawHeader(current_target_device + " Remote", getUniversalModeBadge());
+        display.drawString(0, UI_LINE_1_Y + 4, "No commands found");
+        display.drawString(0, UI_LINE_2_Y + 4, "File: " + univ_profile_path);
+        drawFooter("[<] Back");
         display.display();
       }
       else
       {
-        drawMenu(current_target_device + " Remote", univ_cmd_items, univ_cmd_count, menu_index);
+        drawMenu(current_target_device + " Remote", univ_cmd_items, univ_cmd_count, menu_index, "[<] Back | [BTN] Select", getUniversalModeBadge(), false);
         if (snap.univSending)
           drawUniversalProgressPopup(snap.univProgressName, snap.univProgressCurrent, snap.univProgressTotal);
         display.display();
@@ -1346,51 +1395,48 @@ void uiTask(void *pvParameters)
     {
       UiSnapshot snap = snapshotUi();
       display.clear();
-      display.drawString(0, 0, "<- Back        Blaster");
-      display.drawLine(0, 12, 128, 12);
-      display.drawString(0, 20, "File: " + snap.selectedFile);
-      display.drawString(0, 30, "Btn: " + snap.btnName);
-      display.drawString(0, 40, "Cmd: " + String(remote_cmd_index) + "/" + String(remote_cmd_count));
-      display.drawString(0, 50, snap.status);
+      drawHeader("<- Back   Blaster");
+      display.drawString(0, UI_LINE_1_Y, "File: " + snap.selectedFile);
+      display.drawString(0, UI_LINE_2_Y, "Btn: " + snap.btnName);
+      display.drawString(0, UI_LINE_3_Y, "Cmd: " + String(remote_cmd_index) + "/" + String(remote_cmd_count));
 
       if (snap.transmitting)
-        display.drawString(0, 58, "[ TRANSMITTING... ]");
+        drawFooter("[ TRANSMITTING... ]");
       else
-        display.drawString(0, 58, "[v^] Cmd | [BTN] Blast");
+        drawFooter("[v^] Cmd | [BTN] Blast");
       display.display();
     }
     else if (current_state == APP_LEARN)
     {
       UiSnapshot snap = snapshotUi();
       display.clear();
-      display.drawString(0, 0, "Learn New Remote");
-      display.drawLine(0, 12, 128, 12);
-      display.drawString(0, 20, snap.status);
+      drawHeader("Learn New Remote");
+      display.drawString(0, UI_LINE_1_Y, snap.status);
 
       if (snap.learnPhase == LEARN_LISTENING)
       {
-        display.drawString(0, 32, "Waiting for signal...");
-        display.drawString(0, 52, "[<] Back");
+        display.drawString(0, UI_LINE_2_Y, "Waiting for signal...");
+        drawFooter("[<] Back");
       }
       else if (snap.learnPhase == LEARN_CAPTURED)
       {
-        display.drawString(0, 32, "Captured " + snap.btnName);
-        display.drawString(0, 52, "[BTN] Save | [<] Back");
+        display.drawString(0, UI_LINE_2_Y, "Captured " + snap.btnName);
+        drawFooter("[BTN] Save | [<] Back");
       }
       else if (snap.learnPhase == LEARN_SAVED)
       {
-        display.drawString(0, 32, "Saved to /captures/");
-        display.drawString(0, 52, "[BTN] Capture Again");
+        display.drawString(0, UI_LINE_2_Y, "Saved to /captures/");
+        drawFooter("[BTN] Capture Again");
       }
       else if (snap.learnPhase == LEARN_ERROR)
       {
-        display.drawString(0, 32, "Capture error");
-        display.drawString(0, 52, "[BTN] Retry | [<] Back");
+        display.drawString(0, UI_LINE_2_Y, "Capture error");
+        drawFooter("[BTN] Retry | [<] Back");
       }
       else
       {
-        display.drawString(0, 32, "Preparing listener...");
-        display.drawString(0, 52, "[<] Back");
+        display.drawString(0, UI_LINE_2_Y, "Preparing listener...");
+        drawFooter("[<] Back");
       }
       display.display();
     }
@@ -1457,7 +1503,7 @@ void irTask(void *pvParameters)
 
               int commandIndex = matchIndices[i];
               bool loaded = false;
-              for (uint8_t attempt = 0; attempt < UNIVERSAL_LOAD_RETRIES; attempt++)
+              for (uint8_t attempt = 0; attempt < currentLoadRetries; attempt++)
               {
                 if (loadFlipperCommandByIndex(profilePath, commandIndex))
                 {
@@ -1477,7 +1523,7 @@ void irTask(void *pvParameters)
               setBruteStatus(false, commandIndex, profilePath);
 
               bool sentAtLeastOnce = false;
-              for (uint8_t rep = 0; rep < UNIVERSAL_TRANSMIT_REPEATS; rep++)
+              for (uint8_t rep = 0; rep < currentTransmitRepeats; rep++)
               {
                 if (isUniversalCancelRequested())
                 {
@@ -1489,8 +1535,8 @@ void irTask(void *pvParameters)
                 if (sentOk)
                   sentAtLeastOnce = true;
 
-                if (rep + 1 < UNIVERSAL_TRANSMIT_REPEATS)
-                  vTaskDelay(pdMS_TO_TICKS(UNIVERSAL_REPEAT_GAP_MS));
+                if (rep + 1 < currentTransmitRepeats)
+                  vTaskDelay(pdMS_TO_TICKS(currentRepeatGapMs));
               }
 
               if (sentAtLeastOnce)
@@ -1498,7 +1544,7 @@ void irTask(void *pvParameters)
               else
                 failCount++;
 
-              vTaskDelay(pdMS_TO_TICKS(UNIVERSAL_SEND_DELAY_MS));
+              vTaskDelay(pdMS_TO_TICKS(currentSendDelayMs));
             }
             setUniversalProgress(false, 0, 0, "");
             if (!isUniversalCancelRequested())
@@ -1551,6 +1597,7 @@ void setup()
 
   // Boot IR
   irsend.begin();
+  applyUniversalModeSettings();
 
   // Sync primitives
   stateMutex = xSemaphoreCreateMutex();
