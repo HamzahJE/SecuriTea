@@ -109,6 +109,10 @@ struct SharedState
   bool bruteActive;
   int bruteIndex;
   bool transmitting;
+  bool univSending;
+  int univProgressCurrent;
+  int univProgressTotal;
+  String univProgressName;
   LearnPhase learnPhase;
 };
 
@@ -120,6 +124,10 @@ struct UiSnapshot
   bool bruteActive;
   int bruteIndex;
   bool transmitting;
+  bool univSending;
+  int univProgressCurrent;
+  int univProgressTotal;
+  String univProgressName;
   LearnPhase learnPhase;
 };
 
@@ -158,7 +166,17 @@ SharedState shared = {
     false,
     1,
     false,
+    false,
+    0,
+    0,
+    "",
     LEARN_IDLE};
+
+const uint16_t UNIVERSAL_SEND_DELAY_MS = 90;
+const uint8_t UNIVERSAL_TRANSMIT_REPEATS = 2;
+const uint8_t UNIVERSAL_LOAD_RETRIES = 2;
+const uint16_t UNIVERSAL_REPEAT_GAP_MS = 45;
+volatile bool univ_cancel_requested = false;
 
 String display_items_buffer[MAX_DIR_ITEMS];
 
@@ -223,6 +241,32 @@ void setBruteStatus(bool active, int idx, const String &profilePath)
   shared.bruteIndex = idx;
   shared.bruteProfilePath = profilePath;
   unlockState();
+}
+
+void setUniversalProgress(bool active, int current, int total, const String &name)
+{
+  lockState();
+  shared.univSending = active;
+  shared.univProgressCurrent = current;
+  shared.univProgressTotal = total;
+  shared.univProgressName = name;
+  unlockState();
+}
+
+void requestUniversalCancel(bool value)
+{
+  lockState();
+  univ_cancel_requested = value;
+  unlockState();
+}
+
+bool isUniversalCancelRequested()
+{
+  bool v;
+  lockState();
+  v = univ_cancel_requested;
+  unlockState();
+  return v;
 }
 
 void setPayload(const uint16_t *raw, uint16_t len, uint16_t freqKHz, const String &btnName)
@@ -382,6 +426,10 @@ UiSnapshot snapshotUi()
   snap.bruteActive = shared.bruteActive;
   snap.bruteIndex = shared.bruteIndex;
   snap.transmitting = shared.transmitting;
+  snap.univSending = shared.univSending;
+  snap.univProgressCurrent = shared.univProgressCurrent;
+  snap.univProgressTotal = shared.univProgressTotal;
+  snap.univProgressName = shared.univProgressName;
   snap.learnPhase = shared.learnPhase;
   unlockState();
   return snap;
@@ -470,6 +518,31 @@ void drawStatusPopup(const String &status)
   display.drawRect(x, y, w, h);
   display.setTextAlignment(TEXT_ALIGN_CENTER);
   display.drawString(64, 27, shown);
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+}
+
+void drawUniversalProgressPopup(const String &name, int current, int total)
+{
+  if (total <= 0)
+    return;
+
+  String shown = name;
+  if (shown.length() > 12)
+    shown = shown.substring(0, 12);
+
+  String text = shown + " " + String(current) + "/" + String(total);
+
+  int x = 12;
+  int y = 20;
+  int w = 104;
+  int h = 24;
+
+  display.setColor(BLACK);
+  display.fillRect(x, y, w, h);
+  display.setColor(WHITE);
+  display.drawRect(x, y, w, h);
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.drawString(64, 28, text);
   display.setTextAlignment(TEXT_ALIGN_LEFT);
 }
 
@@ -853,7 +926,7 @@ bool saveLearnedCommandToSD()
   return true;
 }
 
-void transmitCurrentPayload()
+bool transmitCurrentPayload()
 {
   uint16_t rawLocal[MAX_RAW_BUFFER];
   uint16_t lenLocal = 0;
@@ -869,7 +942,7 @@ void transmitCurrentPayload()
   {
     unlockState();
     setStatus("No payload to send");
-    return;
+    return false;
   }
 
   isParsed = shared.payloadIsParsed;
@@ -938,7 +1011,7 @@ void transmitCurrentPayload()
     {
       markTransmitting(false);
       setStatus("Unsupported protocol");
-      return;
+      return false;
     }
   }
   else
@@ -947,14 +1020,15 @@ void transmitCurrentPayload()
     {
       markTransmitting(false);
       setStatus("No raw payload");
-      return;
+      return false;
     }
     irsend.sendRaw(rawLocal, lenLocal, freqLocal);
   }
 
-  vTaskDelay(pdMS_TO_TICKS(250));
+  vTaskDelay(pdMS_TO_TICKS(30));
   markTransmitting(false);
   setStatus("Sent " + btnNameLocal);
+  return true;
 }
 
 bool captureLearnSignal()
@@ -1051,6 +1125,8 @@ void uiTask(void *pvParameters)
         }
         else if (current_state == APP_UNIV_BRUTE)
         {
+          requestUniversalCancel(true);
+          setUniversalProgress(false, 0, 0, "");
           current_state = MENU_UNIV_REMOTE;
           menu_index = 0;
         }
@@ -1092,6 +1168,8 @@ void uiTask(void *pvParameters)
         univ_profile_path = bruteProfileForTarget(current_target_device);
         loadUniversalCommandList(univ_profile_path);
         setBruteStatus(false, 1, univ_profile_path);
+        requestUniversalCancel(false);
+        setUniversalProgress(false, 0, 0, "");
         setStatus("Select command");
 
         current_state = APP_UNIV_BRUTE;
@@ -1101,6 +1179,7 @@ void uiTask(void *pvParameters)
       {
         if (univ_cmd_count > 0)
         {
+          requestUniversalCancel(false);
           queueCommand(IR_CMD_UNIV_SEND, menu_index);
         }
         else
@@ -1258,14 +1337,8 @@ void uiTask(void *pvParameters)
       else
       {
         drawMenu(current_target_device + " Remote", univ_cmd_items, univ_cmd_count, menu_index);
-        bool showPopup = snap.status.startsWith("Sending") ||
-                         snap.status.startsWith("Sent") ||
-                         snap.status.startsWith("Missing") ||
-                         snap.status.startsWith("Unsupported") ||
-                         snap.status.startsWith("Command") ||
-                         snap.status.startsWith("No cmds");
-        if (showPopup)
-          drawStatusPopup(snap.status);
+        if (snap.univSending)
+          drawUniversalProgressPopup(snap.univProgressName, snap.univProgressCurrent, snap.univProgressTotal);
         display.display();
       }
     }
@@ -1367,21 +1440,70 @@ void irTask(void *pvParameters)
           if (matchCount <= 0)
           {
             setStatus("No cmds for " + groupName);
+            setUniversalProgress(false, 0, 0, "");
           }
           else
           {
+            int sentCount = 0;
+            int failCount = 0;
+            setUniversalProgress(true, 0, matchCount, groupName);
             for (int i = 0; i < matchCount; i++)
             {
-              int commandIndex = matchIndices[i];
-              if (loadFlipperCommandByIndex(profilePath, commandIndex))
+              if (isUniversalCancelRequested())
               {
-                setStatus("Sending " + groupName + " " + String(i + 1) + "/" + String(matchCount));
-                setBruteStatus(false, commandIndex, profilePath);
-                transmitCurrentPayload();
-                vTaskDelay(pdMS_TO_TICKS(180));
+                setStatus("Canceled " + groupName);
+                break;
               }
+
+              int commandIndex = matchIndices[i];
+              bool loaded = false;
+              for (uint8_t attempt = 0; attempt < UNIVERSAL_LOAD_RETRIES; attempt++)
+              {
+                if (loadFlipperCommandByIndex(profilePath, commandIndex))
+                {
+                  loaded = true;
+                  break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(15));
+              }
+
+              if (!loaded)
+              {
+                failCount++;
+                continue;
+              }
+
+              setUniversalProgress(true, i + 1, matchCount, groupName);
+              setBruteStatus(false, commandIndex, profilePath);
+
+              bool sentAtLeastOnce = false;
+              for (uint8_t rep = 0; rep < UNIVERSAL_TRANSMIT_REPEATS; rep++)
+              {
+                if (isUniversalCancelRequested())
+                {
+                  setStatus("Canceled " + groupName);
+                  break;
+                }
+
+                bool sentOk = transmitCurrentPayload();
+                if (sentOk)
+                  sentAtLeastOnce = true;
+
+                if (rep + 1 < UNIVERSAL_TRANSMIT_REPEATS)
+                  vTaskDelay(pdMS_TO_TICKS(UNIVERSAL_REPEAT_GAP_MS));
+              }
+
+              if (sentAtLeastOnce)
+                sentCount++;
+              else
+                failCount++;
+
+              vTaskDelay(pdMS_TO_TICKS(UNIVERSAL_SEND_DELAY_MS));
             }
-            setStatus("Sent group " + groupName);
+            setUniversalProgress(false, 0, 0, "");
+            if (!isUniversalCancelRequested())
+              setStatus("Done " + groupName + " " + String(sentCount) + "/" + String(matchCount));
+            requestUniversalCancel(false);
           }
         }
       }
