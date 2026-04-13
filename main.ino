@@ -232,7 +232,7 @@ void displayReset(void)
   pinMode(RST_OLED, OUTPUT);
   digitalWrite(RST_OLED, HIGH);
   delay(1);
-      digitalWrite(RST_OLED, LOW);
+  digitalWrite(RST_OLED, LOW);
   delay(1);
   digitalWrite(RST_OLED, HIGH);
   delay(1);
