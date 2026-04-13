@@ -53,10 +53,13 @@ long last_joy_time = 0;
 
 const String main_menu[] = {"Universal Remote", "File Browser", "Learn New"};
 const int main_menu_len = 3;
-const String univ_menu[] = {"TVs", "ACs", "Projectors"};
-const int univ_menu_len = 3;
-const String univ_commands[] = {"Power", "Vol +", "Vol -", "Ch +", "Ch -"};
-const int univ_commands_len = 5;
+const String univ_menu[] = {"TVs", "ACs", "Projectors", "Audio"};
+const int univ_menu_len = 4;
+
+#define MAX_UNIV_ITEMS 60
+String univ_cmd_items[MAX_UNIV_ITEMS];
+int univ_cmd_count = 0;
+String univ_profile_path = "/univ_tv.ir";
 
 // File Browser Variables
 #define MAX_DIR_ITEMS 20
@@ -65,6 +68,9 @@ bool dir_is_folder[MAX_DIR_ITEMS];
 int dir_item_count = 0;
 String current_path = "/";
 String selected_file_name = "";
+String selected_file_path = "";
+int remote_cmd_index = 1;
+int remote_cmd_count = 1;
 
 // IR Variables
 String status_message = "Ready";
@@ -91,6 +97,10 @@ struct SharedState
   uint16_t raw[MAX_RAW_BUFFER];
   uint16_t rawLen;
   uint16_t freqKHz;
+  bool payloadIsParsed;
+  String parsedProtocol;
+  uint32_t parsedAddress;
+  uint32_t parsedCommand;
   String btnName;
   String status;
   String selectedFile;
@@ -102,11 +112,21 @@ struct SharedState
   LearnPhase learnPhase;
 };
 
+struct UiSnapshot
+{
+  String btnName;
+  String status;
+  String selectedFile;
+  bool bruteActive;
+  int bruteIndex;
+  bool transmitting;
+  LearnPhase learnPhase;
+};
+
 enum IrCommandType
 {
   IR_CMD_TRANSMIT_CURRENT,
-  IR_CMD_BRUTE_START,
-  IR_CMD_BRUTE_STOP,
+  IR_CMD_UNIV_SEND,
   IR_CMD_LEARN_START,
   IR_CMD_LEARN_STOP,
   IR_CMD_LEARN_SAVE
@@ -126,6 +146,10 @@ SharedState shared = {
     {0},
     0,
     38,
+    false,
+    "",
+    0,
+    0,
     "None",
     "Ready",
     "",
@@ -135,6 +159,8 @@ SharedState shared = {
     1,
     false,
     LEARN_IDLE};
+
+String display_items_buffer[MAX_DIR_ITEMS];
 
 // ==========================================
 // HELPER FUNCTIONS
@@ -211,11 +237,33 @@ void setPayload(const uint16_t *raw, uint16_t len, uint16_t freqKHz, const Strin
   }
   shared.rawLen = safeLen;
   shared.freqKHz = freqKHz;
+  shared.payloadIsParsed = false;
+  shared.parsedProtocol = "";
+  shared.parsedAddress = 0;
+  shared.parsedCommand = 0;
   shared.btnName = btnName;
   shared.hasPayload = safeLen > 0;
 
   capturedRawLen = safeLen;
   current_frequency = freqKHz;
+  current_btn_name = btnName;
+  unlockState();
+}
+
+void setParsedPayload(const String &protocol, uint32_t address, uint32_t command, const String &btnName)
+{
+  lockState();
+  shared.rawLen = 0;
+  shared.freqKHz = 38;
+  shared.payloadIsParsed = true;
+  shared.parsedProtocol = protocol;
+  shared.parsedAddress = address;
+  shared.parsedCommand = command;
+  shared.btnName = btnName;
+  shared.hasPayload = true;
+
+  capturedRawLen = 0;
+  current_frequency = 38;
   current_btn_name = btnName;
   unlockState();
 }
@@ -239,6 +287,46 @@ bool copyPayload(uint16_t *outRaw, uint16_t &outLen, uint16_t &outFreqKHz, Strin
   return ok;
 }
 
+int parseHexByte(const String &s)
+{
+  const char *text = s.c_str();
+  return (int)strtol(text, NULL, 16);
+}
+
+uint32_t parseFlipperHex32(const String &field)
+{
+  String tmp = field;
+  tmp.trim();
+
+  uint32_t bytes[4] = {0, 0, 0, 0};
+  int idx = 0;
+  int start = 0;
+
+  while (start < tmp.length() && idx < 4)
+  {
+    int end = tmp.indexOf(' ', start);
+    String token;
+    if (end == -1)
+    {
+      token = tmp.substring(start);
+      start = tmp.length();
+    }
+    else
+    {
+      token = tmp.substring(start, end);
+      start = end + 1;
+      while (start < tmp.length() && tmp.charAt(start) == ' ')
+        start++;
+    }
+
+    token.trim();
+    if (token.length() > 0)
+      bytes[idx++] = (uint32_t)(parseHexByte(token) & 0xFF);
+  }
+
+  return (bytes[0]) | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+}
+
 void queueCommand(IrCommandType type, int arg = 0)
 {
   if (!irCommandQueue)
@@ -255,6 +343,8 @@ String bruteProfileForTarget(const String &target)
     return "/univ_ac.ir";
   if (target == "Proj")
     return "/univ_proj.ir";
+  if (target == "Audio")
+    return "/univ_audio.ir";
   return "/univ_tv.ir";
 }
 
@@ -282,13 +372,37 @@ void markTransmitting(bool value)
   unlockState();
 }
 
-SharedState snapshotShared()
+UiSnapshot snapshotUi()
 {
-  SharedState snap;
+  UiSnapshot snap;
   lockState();
-  snap = shared;
+  snap.btnName = shared.btnName;
+  snap.status = shared.status;
+  snap.selectedFile = shared.selectedFile;
+  snap.bruteActive = shared.bruteActive;
+  snap.bruteIndex = shared.bruteIndex;
+  snap.transmitting = shared.transmitting;
+  snap.learnPhase = shared.learnPhase;
   unlockState();
   return snap;
+}
+
+LearnPhase getLearnPhaseSnapshot()
+{
+  LearnPhase phase;
+  lockState();
+  phase = shared.learnPhase;
+  unlockState();
+  return phase;
+}
+
+String getUniversalProfilePathSnapshot()
+{
+  String profile;
+  lockState();
+  profile = shared.bruteProfilePath;
+  unlockState();
+  return profile;
 }
 
 String getBaseName(String path)
@@ -400,10 +514,14 @@ bool loadFlipperCommandByIndex(String filepath, int target_index)
   int command_count = 0;
   bool target_found = false;
   bool is_raw = false;
+  bool is_parsed = false;
   uint16_t tempRaw[MAX_RAW_BUFFER];
   uint16_t tempRawLen = 0;
   uint16_t tempFrequency = 38;
   String tempBtnName = "None";
+  String tempProtocol = "";
+  uint32_t tempAddress = 0;
+  uint32_t tempCommand = 0;
 
   while (file.available())
   {
@@ -419,9 +537,13 @@ bool loadFlipperCommandByIndex(String filepath, int target_index)
       {
         target_found = true;
         is_raw = false;
+        is_parsed = false;
         tempRawLen = 0;
         tempFrequency = 38;
         tempBtnName = line.substring(6);
+        tempProtocol = "";
+        tempAddress = 0;
+        tempCommand = 0;
       }
       else
       {
@@ -431,6 +553,30 @@ bool loadFlipperCommandByIndex(String filepath, int target_index)
     else if (target_found && line.startsWith("type: raw"))
     {
       is_raw = true;
+      is_parsed = false;
+    }
+    else if (target_found && line.startsWith("type: parsed"))
+    {
+      is_parsed = true;
+      is_raw = false;
+    }
+    else if (target_found && is_parsed && line.startsWith("protocol: "))
+    {
+      tempProtocol = line.substring(10);
+      tempProtocol.trim();
+    }
+    else if (target_found && is_parsed && line.startsWith("address: "))
+    {
+      tempAddress = parseFlipperHex32(line.substring(9));
+    }
+    else if (target_found && is_parsed && line.startsWith("command: "))
+    {
+      tempCommand = parseFlipperHex32(line.substring(9));
+      file.close();
+      unlockSD();
+      setParsedPayload(tempProtocol, tempAddress, tempCommand, tempBtnName);
+      setStatus("Loaded: " + tempBtnName + " (parsed)");
+      return true;
     }
     else if (target_found && is_raw && line.startsWith("frequency: "))
     {
@@ -485,6 +631,120 @@ bool loadFlipperCommandByIndex(String filepath, int target_index)
   if (target_index == 1)
     setStatus("No IR commands in file");
   return false;
+}
+
+int countCommandsInFile(const String &path)
+{
+  lockSD();
+  File file = SD.open(path);
+  if (!file)
+  {
+    unlockSD();
+    return 0;
+  }
+
+  int count = 0;
+  while (file.available())
+  {
+    String line = file.readStringUntil('\n');
+    line.trim();
+    if (line.startsWith("name: "))
+      count++;
+    yield();
+  }
+
+  file.close();
+  unlockSD();
+  return count;
+}
+
+bool loadUniversalCommandList(const String &path)
+{
+  univ_cmd_count = 0;
+
+  lockSD();
+  File file = SD.open(path);
+  if (!file)
+  {
+    unlockSD();
+    setStatus("Missing " + path);
+    return false;
+  }
+
+  while (file.available() && univ_cmd_count < MAX_UNIV_ITEMS)
+  {
+    String line = file.readStringUntil('\n');
+    line.trim();
+    if (line.startsWith("name: "))
+    {
+      String groupName = line.substring(6);
+      groupName.trim();
+
+      bool alreadyExists = false;
+      for (int i = 0; i < univ_cmd_count; i++)
+      {
+        if (univ_cmd_items[i].equalsIgnoreCase(groupName))
+        {
+          alreadyExists = true;
+          break;
+        }
+      }
+
+      if (!alreadyExists)
+      {
+        univ_cmd_items[univ_cmd_count] = groupName;
+        univ_cmd_count++;
+      }
+    }
+    yield();
+  }
+
+  file.close();
+  unlockSD();
+
+  if (univ_cmd_count == 0)
+  {
+    setStatus("No commands in profile");
+    return false;
+  }
+
+  return true;
+}
+
+int getUniversalGroupCommandIndices(const String &path, const String &groupName, int *indices, int maxIndices)
+{
+  lockSD();
+  File file = SD.open(path);
+  if (!file)
+  {
+    unlockSD();
+    return 0;
+  }
+
+  int commandIndex = 0;
+  int matched = 0;
+
+  while (file.available())
+  {
+    String line = file.readStringUntil('\n');
+    line.trim();
+
+    if (line.startsWith("name: "))
+    {
+      commandIndex++;
+      String thisName = line.substring(6);
+      thisName.trim();
+      if (thisName.equalsIgnoreCase(groupName) && matched < maxIndices)
+      {
+        indices[matched++] = commandIndex;
+      }
+    }
+    yield();
+  }
+
+  file.close();
+  unlockSD();
+  return matched;
 }
 
 int getNextLearnedIndex(const String &path)
@@ -576,16 +836,99 @@ void transmitCurrentPayload()
   uint16_t lenLocal = 0;
   uint16_t freqLocal = 38;
   String btnNameLocal = "None";
+  bool isParsed = false;
+  String protocolLocal = "";
+  uint32_t addressLocal = 0;
+  uint32_t commandLocal = 0;
 
-  if (!copyPayload(rawLocal, lenLocal, freqLocal, btnNameLocal) || lenLocal == 0)
+  lockState();
+  if (!shared.hasPayload)
   {
+    unlockState();
     setStatus("No payload to send");
     return;
   }
 
+  isParsed = shared.payloadIsParsed;
+  btnNameLocal = shared.btnName;
+  if (isParsed)
+  {
+    protocolLocal = shared.parsedProtocol;
+    addressLocal = shared.parsedAddress;
+    commandLocal = shared.parsedCommand;
+  }
+  else
+  {
+    lenLocal = shared.rawLen;
+    freqLocal = shared.freqKHz;
+    for (uint16_t i = 0; i < lenLocal; i++)
+      rawLocal[i] = shared.raw[i];
+  }
+  unlockState();
+
   markTransmitting(true);
   setStatus("Sending " + btnNameLocal);
-  irsend.sendRaw(rawLocal, lenLocal, freqLocal);
+
+  if (isParsed)
+  {
+    String p = protocolLocal;
+    p.toUpperCase();
+
+    uint8_t addr8 = (uint8_t)(addressLocal & 0xFF);
+    uint8_t cmd8 = (uint8_t)(commandLocal & 0xFF);
+    uint16_t addr16 = (uint16_t)(addressLocal & 0xFFFF);
+    uint16_t cmd16 = (uint16_t)(commandLocal & 0xFFFF);
+
+    if (p == "SAMSUNG32" || p == "SAMSUNG")
+    {
+      uint32_t data = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
+                      ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
+      irsend.sendSAMSUNG(data, 32);
+    }
+    else if (p == "NECEXT")
+    {
+      uint32_t data = ((uint32_t)cmd16 << 16) | (uint32_t)addr16;
+      irsend.sendNEC(data, 32);
+    }
+    else if (p == "NEC")
+    {
+      uint32_t data = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
+                      ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
+      irsend.sendNEC(data, 32);
+    }
+    else if (p == "RC5")
+    {
+      uint16_t data = (uint16_t)(((addr8 & 0x1F) << 6) | (cmd8 & 0x3F));
+      irsend.sendRC5(data, 12);
+    }
+    else if (p == "RC6")
+    {
+      uint32_t data = ((uint32_t)(addr8 & 0xFF) << 8) | (uint32_t)(cmd8 & 0xFF);
+      irsend.sendRC6(data, 20);
+    }
+    else if (p == "SIRC" || p == "SONY")
+    {
+      uint16_t data = (uint16_t)((cmd8 & 0x7F) | ((addr8 & 0x1F) << 7));
+      irsend.sendSony(data, 12);
+    }
+    else
+    {
+      markTransmitting(false);
+      setStatus("Unsupported protocol");
+      return;
+    }
+  }
+  else
+  {
+    if (lenLocal == 0)
+    {
+      markTransmitting(false);
+      setStatus("No raw payload");
+      return;
+    }
+    irsend.sendRaw(rawLocal, lenLocal, freqLocal);
+  }
+
   vTaskDelay(pdMS_TO_TICKS(250));
   markTransmitting(false);
   setStatus("Sent " + btnNameLocal);
@@ -644,7 +987,15 @@ void uiTask(void *pvParameters)
     {
       if (yVal < 1000)
       {
-        if (current_state == APP_FILE_BROWSER && menu_index > 0)
+        if (current_state == APP_REMOTE_VIEW)
+        {
+          if (remote_cmd_index > 1)
+          {
+            remote_cmd_index--;
+            loadFlipperCommandByIndex(selected_file_path, remote_cmd_index);
+          }
+        }
+        else if (current_state == APP_FILE_BROWSER && menu_index > 0)
           menu_index--;
         else if (current_state != APP_FILE_BROWSER)
           menu_index--;
@@ -652,7 +1003,15 @@ void uiTask(void *pvParameters)
       }
       if (yVal > 3000)
       {
-        if (current_state == APP_FILE_BROWSER && menu_index < dir_item_count - 1)
+        if (current_state == APP_REMOTE_VIEW)
+        {
+          if (remote_cmd_index < remote_cmd_count)
+          {
+            remote_cmd_index++;
+            loadFlipperCommandByIndex(selected_file_path, remote_cmd_index);
+          }
+        }
+        else if (current_state == APP_FILE_BROWSER && menu_index < dir_item_count - 1)
           menu_index++;
         else if (current_state != APP_FILE_BROWSER)
           menu_index++;
@@ -669,7 +1028,6 @@ void uiTask(void *pvParameters)
         }
         else if (current_state == APP_UNIV_BRUTE)
         {
-          queueCommand(IR_CMD_BRUTE_STOP);
           current_state = MENU_UNIV_REMOTE;
           menu_index = 0;
         }
@@ -705,19 +1063,27 @@ void uiTask(void *pvParameters)
           current_target_device = "AC";
         if (menu_index == 2)
           current_target_device = "Proj";
+        if (menu_index == 3)
+          current_target_device = "Audio";
+
+        univ_profile_path = bruteProfileForTarget(current_target_device);
+        loadUniversalCommandList(univ_profile_path);
+        setBruteStatus(false, 1, univ_profile_path);
+        setStatus("Select command");
+
         current_state = APP_UNIV_BRUTE;
         menu_index = 0;
       }
       else if (current_state == APP_UNIV_BRUTE)
       {
-        if (menu_index < 0)
-          menu_index = 0;
-        int targetCode = 0;
-        if (current_target_device == "AC")
-          targetCode = 1;
-        else if (current_target_device == "Proj")
-          targetCode = 2;
-        queueCommand(IR_CMD_BRUTE_START, targetCode);
+        if (univ_cmd_count > 0)
+        {
+          queueCommand(IR_CMD_UNIV_SEND, menu_index);
+        }
+        else
+        {
+          setStatus("No commands loaded");
+        }
       }
       else if (current_state == APP_FILE_BROWSER)
       {
@@ -752,8 +1118,18 @@ void uiTask(void *pvParameters)
           else
             full_path = current_path + "/" + dir_items[menu_index];
 
+          selected_file_path = full_path;
+          remote_cmd_count = countCommandsInFile(full_path);
+          if (remote_cmd_count <= 0)
+          {
+            setStatus("No commands in file");
+            lastBtnState = currentBtnState;
+            vTaskDelay(pdMS_TO_TICKS(33));
+            continue;
+          }
+          remote_cmd_index = 1;
           setSelectedFileName(dir_items[menu_index]);
-          loadFlipperCommandByIndex(full_path, 1);
+          loadFlipperCommandByIndex(full_path, remote_cmd_index);
           current_state = APP_REMOTE_VIEW;
         }
       }
@@ -763,13 +1139,13 @@ void uiTask(void *pvParameters)
       }
       else if (current_state == APP_LEARN)
       {
-        SharedState snap = snapshotShared();
-        if (snap.learnPhase == LEARN_CAPTURED)
+        LearnPhase phase = getLearnPhaseSnapshot();
+        if (phase == LEARN_CAPTURED)
         {
           setLearnPhase(LEARN_SAVING);
           queueCommand(IR_CMD_LEARN_SAVE);
         }
-        else if (snap.learnPhase == LEARN_ERROR || snap.learnPhase == LEARN_IDLE || snap.learnPhase == LEARN_SAVED)
+        else if (phase == LEARN_ERROR || phase == LEARN_IDLE || phase == LEARN_SAVED)
         {
           queueCommand(IR_CMD_LEARN_START);
         }
@@ -809,13 +1185,12 @@ void uiTask(void *pvParameters)
     }
     else if (current_state == APP_FILE_BROWSER)
     {
-      String display_items[MAX_DIR_ITEMS];
       for (int i = 0; i < dir_item_count; i++)
       {
         if (dir_is_folder[i] && dir_items[i] != ".. (Back)")
-          display_items[i] = "[DIR] " + dir_items[i];
+          display_items_buffer[i] = "[DIR] " + dir_items[i];
         else
-          display_items[i] = dir_items[i];
+          display_items_buffer[i] = dir_items[i];
       }
       if (dir_item_count == 0)
       {
@@ -828,53 +1203,62 @@ void uiTask(void *pvParameters)
       }
       else
       {
-        drawMenu("Path: " + current_path, display_items, dir_item_count, menu_index);
+        drawMenu("Path: " + current_path, display_items_buffer, dir_item_count, menu_index);
       }
     }
     else if (current_state == APP_UNIV_BRUTE)
     {
-      if (menu_index < 0)
-        menu_index = univ_commands_len - 1;
-      if (menu_index >= univ_commands_len)
-        menu_index = 0;
-      SharedState snap = snapshotShared();
-
-      display.clear();
-      display.setTextAlignment(TEXT_ALIGN_LEFT);
-      display.drawString(0, 0, current_target_device + " Univ: " + univ_commands[menu_index]);
-      display.drawLine(0, 12, 128, 12);
-
-      if (snap.bruteActive)
+      if (univ_cmd_count > 0)
       {
-        display.drawString(0, 25, ">> BLASTING <<");
-        display.drawString(0, 35, "Sent: " + snap.btnName);
+        if (menu_index < 0)
+          menu_index = univ_cmd_count - 1;
+        if (menu_index >= univ_cmd_count)
+          menu_index = 0;
       }
       else
       {
-        display.drawString(0, 25, "Target " + current_target_device + " and press");
-        display.drawString(0, 35, snap.status);
+        menu_index = 0;
       }
-      display.drawString(0, 52, "[<] Back | [v^] Change");
-      display.display();
+      UiSnapshot snap = snapshotUi();
+
+      if (univ_cmd_count <= 0)
+      {
+        display.clear();
+        display.setTextAlignment(TEXT_ALIGN_LEFT);
+        display.drawString(0, 0, current_target_device + " Remote");
+        display.drawLine(0, 12, 128, 12);
+        display.drawString(0, 24, "No commands found");
+        display.drawString(0, 36, "File: " + univ_profile_path);
+        display.drawString(0, 52, "[<] Back");
+        display.display();
+      }
+      else
+      {
+        drawMenu(current_target_device + " Remote", univ_cmd_items, univ_cmd_count, menu_index);
+        display.drawString(0, 52, snap.status);
+        display.display();
+      }
     }
     else if (current_state == APP_REMOTE_VIEW)
     {
-      SharedState snap = snapshotShared();
+      UiSnapshot snap = snapshotUi();
       display.clear();
       display.drawString(0, 0, "<- Back        Blaster");
       display.drawLine(0, 12, 128, 12);
       display.drawString(0, 20, "File: " + snap.selectedFile);
       display.drawString(0, 30, "Btn: " + snap.btnName);
+      display.drawString(0, 40, "Cmd: " + String(remote_cmd_index) + "/" + String(remote_cmd_count));
+      display.drawString(0, 50, snap.status);
 
       if (snap.transmitting)
-        display.drawString(0, 52, "[ TRANSMITTING... ]");
+        display.drawString(0, 58, "[ TRANSMITTING... ]");
       else
-        display.drawString(0, 52, "[<] Back | [BTN] Blast");
+        display.drawString(0, 58, "[v^] Cmd | [BTN] Blast");
       display.display();
     }
     else if (current_state == APP_LEARN)
     {
-      SharedState snap = snapshotShared();
+      UiSnapshot snap = snapshotUi();
       display.clear();
       display.drawString(0, 0, "Learn New Remote");
       display.drawLine(0, 12, 128, 12);
@@ -914,9 +1298,6 @@ void uiTask(void *pvParameters)
 
 void irTask(void *pvParameters)
 {
-  bool bruteActive = false;
-  int bruteIndex = 1;
-  String brutePath = "/univ_tv.ir";
   bool learnListening = false;
 
   while (1)
@@ -928,32 +1309,51 @@ void irTask(void *pvParameters)
       {
         transmitCurrentPayload();
       }
-      else if (cmd.type == IR_CMD_BRUTE_START)
+      else if (cmd.type == IR_CMD_UNIV_SEND)
       {
-        brutePath = bruteProfileForCode(cmd.arg);
+        String profilePath = getUniversalProfilePathSnapshot();
+        int groupIdx = cmd.arg;
+
+        if (groupIdx < 0 || groupIdx >= univ_cmd_count)
+        {
+          setStatus("Invalid group");
+          continue;
+        }
+
+        String groupName = univ_cmd_items[groupIdx];
         lockSD();
-        bool exists = SD.exists(brutePath.c_str());
+        bool exists = SD.exists(profilePath.c_str());
         unlockSD();
 
         if (!exists)
         {
-          setStatus("Missing " + brutePath);
-          bruteActive = false;
-          setBruteStatus(false, 1, brutePath);
+          setStatus("Missing " + profilePath);
         }
         else
         {
-          bruteActive = true;
-          bruteIndex = 1;
-          setStatus("Brute started");
-          setBruteStatus(true, bruteIndex, brutePath);
+          int matchIndices[MAX_UNIV_ITEMS];
+          int matchCount = getUniversalGroupCommandIndices(profilePath, groupName, matchIndices, MAX_UNIV_ITEMS);
+
+          if (matchCount <= 0)
+          {
+            setStatus("No cmds for " + groupName);
+          }
+          else
+          {
+            for (int i = 0; i < matchCount; i++)
+            {
+              int commandIndex = matchIndices[i];
+              if (loadFlipperCommandByIndex(profilePath, commandIndex))
+              {
+                setStatus("Sending " + groupName + " " + String(i + 1) + "/" + String(matchCount));
+                setBruteStatus(false, commandIndex, profilePath);
+                transmitCurrentPayload();
+                vTaskDelay(pdMS_TO_TICKS(180));
+              }
+            }
+            setStatus("Sent group " + groupName);
+          }
         }
-      }
-      else if (cmd.type == IR_CMD_BRUTE_STOP)
-      {
-        bruteActive = false;
-        setBruteStatus(false, bruteIndex, brutePath);
-        setStatus("Brute stopped");
       }
       else if (cmd.type == IR_CMD_LEARN_START)
       {
@@ -971,23 +1371,6 @@ void irTask(void *pvParameters)
       else if (cmd.type == IR_CMD_LEARN_SAVE)
       {
         saveLearnedCommandToSD();
-      }
-    }
-
-    if (bruteActive)
-    {
-      if (loadFlipperCommandByIndex(brutePath, bruteIndex))
-      {
-        transmitCurrentPayload();
-        bruteIndex++;
-        setBruteStatus(true, bruteIndex, brutePath);
-        vTaskDelay(pdMS_TO_TICKS(350));
-      }
-      else
-      {
-        bruteActive = false;
-        setBruteStatus(false, bruteIndex, brutePath);
-        setStatus("Brute done");
       }
     }
 
@@ -1048,8 +1431,8 @@ void setup()
     setStatus("Ready");
   }
 
-  xTaskCreatePinnedToCore(uiTask, "UI_Task", 4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(irTask, "IR_Task", 4096, NULL, 2, NULL, 0);
+  xTaskCreatePinnedToCore(uiTask, "UI_Task", 8192, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(irTask, "IR_Task", 6144, NULL, 2, NULL, 0);
 }
 
 void loop() { vTaskDelete(NULL); }
