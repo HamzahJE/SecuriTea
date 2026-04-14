@@ -102,6 +102,20 @@ String getUniversalModeBadge()
     return "SING";
 }
 
+String getRemoteSendModeLabel()
+{
+    if (remote_send_mode == REMOTE_SEND_LOOP)
+        return "Loop";
+    return "One";
+}
+
+String getRemoteSendModeBadge()
+{
+    if (remote_send_mode == REMOTE_SEND_LOOP)
+        return "LOOP";
+    return "ONE";
+}
+
 void applyUniversalModeSettings()
 {
     if (universal_mode == UNIV_MODE_AGGRESSIVE)

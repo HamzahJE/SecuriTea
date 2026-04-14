@@ -22,6 +22,7 @@ void uiTask(void *pvParameters)
                     headerModeSelected = false;
                 if (current_state == APP_REMOTE_VIEW)
                 {
+                    remoteModeSelected = false;
                     if (remote_cmd_index > 1)
                     {
                         remote_cmd_index--;
@@ -40,6 +41,7 @@ void uiTask(void *pvParameters)
                     headerModeSelected = false;
                 if (current_state == APP_REMOTE_VIEW)
                 {
+                    remoteModeSelected = false;
                     if (remote_cmd_index < remote_cmd_count)
                     {
                         remote_cmd_index++;
@@ -66,12 +68,27 @@ void uiTask(void *pvParameters)
                     setStatus("Filter: " + getFileBrowserFilterLabel());
                     last_joy_time = current_time;
                 }
+                else if (current_state == APP_REMOTE_VIEW)
+                {
+                    remoteModeSelected = true;
+                    last_joy_time = current_time;
+                }
             }
             if (xVal < 1000)
             {
                 if (current_state == MENU_UNIV_REMOTE && headerModeSelected)
                 {
                     headerModeSelected = false;
+                }
+                else if (current_state == APP_REMOTE_VIEW && remoteModeSelected)
+                {
+                    remoteModeSelected = false;
+                }
+                else if (current_state == APP_FILE_BROWSER && file_filter_index != 0)
+                {
+                    resetFileBrowserFilter();
+                    loadDirectory(current_path);
+                    setStatus("Filter: ALL");
                 }
                 else if (current_state == MENU_UNIV_REMOTE || current_state == APP_LEARN || current_state == APP_FILE_BROWSER)
                 {
@@ -183,6 +200,9 @@ void uiTask(void *pvParameters)
                             current_path = "/" + dir_items[menu_index];
                         else
                             current_path = current_path + "/" + dir_items[menu_index];
+
+                        // Apply first-letter filtering only at the current level.
+                        resetFileBrowserFilter();
                     }
                     loadDirectory(current_path);
                 }
@@ -211,7 +231,23 @@ void uiTask(void *pvParameters)
             }
             else if (current_state == APP_REMOTE_VIEW)
             {
-                queueCommand(IR_CMD_TRANSMIT_CURRENT);
+                if (remoteModeSelected)
+                {
+                    if (remote_send_mode == REMOTE_SEND_ONE)
+                        remote_send_mode = REMOTE_SEND_LOOP;
+                    else
+                        remote_send_mode = REMOTE_SEND_ONE;
+
+                    setStatus("Remote Mode: " + getRemoteSendModeLabel());
+                    remoteModeSelected = false;
+                }
+                else
+                {
+                    if (remote_send_mode == REMOTE_SEND_LOOP)
+                        queueCommand(IR_CMD_REMOTE_SEND_ALL);
+                    else
+                        queueCommand(IR_CMD_TRANSMIT_CURRENT);
+                }
             }
             else if (current_state == APP_LEARN)
             {
@@ -239,6 +275,10 @@ void uiTask(void *pvParameters)
             if (current_state == MENU_UNIV_REMOTE)
             {
                 headerModeSelected = false;
+            }
+            if (current_state == APP_REMOTE_VIEW)
+            {
+                remoteModeSelected = false;
             }
             if (previousState == APP_LEARN && current_state != APP_LEARN)
             {
@@ -280,12 +320,12 @@ void uiTask(void *pvParameters)
                 display.clear();
                 drawHeader("Path: " + current_path, getFileBrowserFilterLabel());
                 display.drawString(0, UI_LINE_1_Y + 4, "(No items)");
-                drawFooter("[>]Filter [<]Back");
+                drawFooter("[>]Filter [<]Clr/Back");
                 display.display();
             }
             else
             {
-                drawMenu("Path: " + current_path, display_items_buffer, dir_item_count, menu_index, "[>]Filter [BTN]Open [<]Back", getFileBrowserFilterLabel());
+                drawMenu("Path: " + current_path, display_items_buffer, dir_item_count, menu_index, "[>]Filter [BTN]Open [<]Clr/Back", getFileBrowserFilterLabel());
             }
         }
         else if (current_state == APP_UNIV_BRUTE)
@@ -324,7 +364,7 @@ void uiTask(void *pvParameters)
         {
             UiSnapshot snap = snapshotUi();
             display.clear();
-            drawHeader("<- Back   Blaster");
+            drawHeader("<- Back   Blaster", getRemoteSendModeBadge(), remoteModeSelected);
             display.drawString(0, UI_LINE_1_Y, "File: " + snap.selectedFile);
             display.drawString(0, UI_LINE_2_Y, "Btn: " + snap.btnName);
             display.drawString(0, UI_LINE_3_Y, "Cmd: " + String(remote_cmd_index) + "/" + String(remote_cmd_count));
@@ -332,7 +372,7 @@ void uiTask(void *pvParameters)
             if (snap.transmitting)
                 drawFooter("[ TRANSMITTING... ]");
             else
-                drawFooter("[v^] Cmd | [BTN] Blast");
+                drawFooter("[v^]Cmd [>]Mode [BTN]Send");
             display.display();
         }
         else if (current_state == APP_LEARN)
@@ -386,6 +426,40 @@ void irTask(void *pvParameters)
             if (cmd.type == IR_CMD_TRANSMIT_CURRENT)
             {
                 transmitCurrentPayload();
+            }
+            else if (cmd.type == IR_CMD_REMOTE_SEND_ALL)
+            {
+                String path = selected_file_path;
+                if (path.length() == 0 || remote_cmd_count <= 0)
+                {
+                    setStatus("No file commands");
+                }
+                else
+                {
+                    int sentCount = 0;
+                    for (int i = 1; i <= remote_cmd_count; i++)
+                    {
+                        bool loaded = loadFlipperCommandByIndex(path, i);
+                        if (!loaded)
+                            continue;
+
+                        bool sentOk = false;
+                        for (uint8_t rep = 0; rep < currentTransmitRepeats; rep++)
+                        {
+                            if (transmitCurrentPayload())
+                                sentOk = true;
+
+                            if (rep + 1 < currentTransmitRepeats)
+                                vTaskDelay(pdMS_TO_TICKS(currentRepeatGapMs));
+                        }
+
+                        if (sentOk)
+                            sentCount++;
+
+                        vTaskDelay(pdMS_TO_TICKS(currentSendDelayMs));
+                    }
+                    setStatus("Loop Done " + String(sentCount) + "/" + String(remote_cmd_count));
+                }
             }
             else if (cmd.type == IR_CMD_UNIV_SEND)
             {

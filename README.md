@@ -1,6 +1,6 @@
 # SecuriTea
-
 Spilling the tea about security.
+![alt text](images/securitea.png)
 
 SecuriTea is an ESP32-based handheld IR utility that combines:
 - Universal IR brute-force profiles

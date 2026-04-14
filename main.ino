@@ -63,7 +63,7 @@ int univ_cmd_count = 0;
 String univ_profile_path = "/univ_tv.ir";
 
 // File Browser Variables
-#define MAX_DIR_ITEMS 20
+#define MAX_DIR_ITEMS 260
 String dir_items[MAX_DIR_ITEMS];
 bool dir_is_folder[MAX_DIR_ITEMS];
 int dir_item_count = 0;
@@ -144,11 +144,19 @@ struct UiSnapshot
 enum IrCommandType
 {
   IR_CMD_TRANSMIT_CURRENT,
+  IR_CMD_REMOTE_SEND_ALL,
   IR_CMD_UNIV_SEND,
   IR_CMD_LEARN_START,
   IR_CMD_LEARN_STOP,
   IR_CMD_LEARN_SAVE
 };
+
+enum RemoteSendMode
+{
+  REMOTE_SEND_ONE,
+  REMOTE_SEND_LOOP
+};
+RemoteSendMode remote_send_mode = REMOTE_SEND_ONE;
 
 struct IrCommand
 {
@@ -221,6 +229,7 @@ const int UI_LINE_3_Y = 44;
 const int UI_FOOTER_Y = 54;
 
 bool headerModeSelected = false;
+bool remoteModeSelected = false;
 
 uint16_t currentSendDelayMs = UNIVERSAL_SEND_DELAY_MS;
 uint8_t currentTransmitRepeats = UNIVERSAL_TRANSMIT_REPEATS;
