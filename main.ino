@@ -124,6 +124,8 @@ struct SharedState
   int univProgressTotal;
   String univProgressName;
   LearnPhase learnPhase;
+  String learnProtocol;
+  String learnDetail;
 };
 
 struct UiSnapshot
@@ -139,6 +141,8 @@ struct UiSnapshot
   int univProgressTotal;
   String univProgressName;
   LearnPhase learnPhase;
+  String learnProtocol;
+  String learnDetail;
 };
 
 enum IrCommandType
@@ -188,7 +192,9 @@ SharedState shared = {
     0,
     0,
     "",
-    LEARN_IDLE};
+    LEARN_IDLE,
+    "",
+    ""};
 
 const uint16_t UNIVERSAL_SEND_DELAY_MS = 120;
 const uint8_t UNIVERSAL_TRANSMIT_REPEATS = 1;

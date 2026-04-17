@@ -546,17 +546,44 @@ bool captureLearnSignal()
         localRaw[localLen++] = results.rawbuf[i] * kRawTick;
     }
 
+    String protocol = typeToString(results.decode_type, false);
+    if (protocol.length() == 0)
+        protocol = "UNKNOWN";
+    protocol.toUpperCase();
+
+    String detail = "Bits:" + String(results.bits);
+    if (results.address != 0 || results.command != 0)
+    {
+        String addrHex = String((uint32_t)results.address, HEX);
+        String cmdHex = String((uint32_t)results.command, HEX);
+        addrHex.toUpperCase();
+        cmdHex.toUpperCase();
+        detail = "A:0x" + addrHex + " C:0x" + cmdHex;
+    }
+    else if (results.value != 0)
+    {
+        String valueHex = uint64ToString(results.value, 16);
+        valueHex.toUpperCase();
+        detail = "V:0x" + valueHex + " B:" + String(results.bits);
+    }
+
+    Serial.println("=== LEARN CAPTURE ===");
+    Serial.println(resultToHumanReadableBasic(&results));
+    Serial.println(resultToSourceCode(&results));
+
     irrecv.resume();
 
     if (localLen == 0)
     {
+        setLearnDetails("", "");
         setStatus("Capture failed");
         setLearnPhase(LEARN_ERROR);
         return false;
     }
 
     setPayload(localRaw, localLen, localFreq, "Captured");
-    setStatus("Signal captured");
+    setLearnDetails(protocol, detail);
+    setStatus("Captured " + protocol);
     setLearnPhase(LEARN_CAPTURED);
     return true;
 }

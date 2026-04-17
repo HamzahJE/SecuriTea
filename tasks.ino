@@ -389,12 +389,17 @@ void uiTask(void *pvParameters)
             }
             else if (snap.learnPhase == LEARN_CAPTURED)
             {
-                display.drawString(0, UI_LINE_2_Y, "Captured " + snap.btnName);
+                String proto = snap.learnProtocol.length() ? snap.learnProtocol : "UNKNOWN";
+                display.drawString(0, UI_LINE_2_Y, trimToWidth("Proto: " + proto, 21));
+                if (snap.learnDetail.length())
+                    display.drawString(0, UI_LINE_3_Y, trimToWidth(snap.learnDetail, 21));
                 drawFooter("[BTN] Save | [<] Back");
             }
             else if (snap.learnPhase == LEARN_SAVED)
             {
                 display.drawString(0, UI_LINE_2_Y, "Saved to /captures/");
+                if (snap.learnProtocol.length())
+                    display.drawString(0, UI_LINE_3_Y, trimToWidth("Proto: " + snap.learnProtocol, 21));
                 drawFooter("[BTN] Capture Again");
             }
             else if (snap.learnPhase == LEARN_ERROR)
@@ -561,6 +566,7 @@ void irTask(void *pvParameters)
                 irrecv.enableIRIn();
                 learnListening = true;
                 setLearnPhase(LEARN_LISTENING);
+                setLearnDetails("", "");
                 setStatus("Listening...");
             }
             else if (cmd.type == IR_CMD_LEARN_STOP)
@@ -568,6 +574,7 @@ void irTask(void *pvParameters)
                 learnListening = false;
                 irrecv.disableIRIn();
                 setLearnPhase(LEARN_IDLE);
+                setLearnDetails("", "");
             }
             else if (cmd.type == IR_CMD_LEARN_SAVE)
             {

@@ -53,6 +53,14 @@ void setLearnPhase(LearnPhase phase)
     unlockState();
 }
 
+void setLearnDetails(const String &protocol, const String &detail)
+{
+    lockState();
+    shared.learnProtocol = protocol;
+    shared.learnDetail = detail;
+    unlockState();
+}
+
 void setBruteStatus(bool active, int idx, const String &profilePath)
 {
     lockState();
@@ -298,6 +306,8 @@ UiSnapshot snapshotUi()
     snap.univProgressTotal = shared.univProgressTotal;
     snap.univProgressName = shared.univProgressName;
     snap.learnPhase = shared.learnPhase;
+    snap.learnProtocol = shared.learnProtocol;
+    snap.learnDetail = shared.learnDetail;
     unlockState();
     return snap;
 }
