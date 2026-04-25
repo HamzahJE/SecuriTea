@@ -114,6 +114,8 @@ String getRemoteSendModeLabel()
 {
     if (remote_send_mode == REMOTE_SEND_LOOP)
         return "Loop";
+    if (remote_send_mode == REMOTE_SEND_DELETE)
+        return "Delete";
     return "One";
 }
 
@@ -121,6 +123,8 @@ String getRemoteSendModeBadge()
 {
     if (remote_send_mode == REMOTE_SEND_LOOP)
         return "LOOP";
+    if (remote_send_mode == REMOTE_SEND_DELETE)
+        return "DEL";
     return "ONE";
 }
 

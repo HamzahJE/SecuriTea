@@ -235,6 +235,8 @@ void uiTask(void *pvParameters)
                 {
                     if (remote_send_mode == REMOTE_SEND_ONE)
                         remote_send_mode = REMOTE_SEND_LOOP;
+                    else if (remote_send_mode == REMOTE_SEND_LOOP)
+                        remote_send_mode = REMOTE_SEND_DELETE;
                     else
                         remote_send_mode = REMOTE_SEND_ONE;
 
@@ -245,8 +247,10 @@ void uiTask(void *pvParameters)
                 {
                     if (remote_send_mode == REMOTE_SEND_LOOP)
                         queueCommand(IR_CMD_REMOTE_SEND_ALL);
-                    else
+                    else if (remote_send_mode == REMOTE_SEND_ONE)
                         queueCommand(IR_CMD_TRANSMIT_CURRENT);
+                    else
+                        queueCommand(IR_CMD_REMOTE_DELETE);
                 }
             }
             else if (current_state == APP_LEARN)
@@ -371,6 +375,8 @@ void uiTask(void *pvParameters)
 
             if (snap.transmitting)
                 drawFooter("[ TRANSMITTING... ]");
+            else if (remote_send_mode == REMOTE_SEND_DELETE)
+                drawFooter("[v^]Cmd [>]Mode [BTN]Delete");
             else
                 drawFooter("[v^]Cmd [>]Mode [BTN]Send");
             display.display();
@@ -464,6 +470,58 @@ void irTask(void *pvParameters)
                         vTaskDelay(pdMS_TO_TICKS(currentSendDelayMs));
                     }
                     setStatus("Loop Done " + String(sentCount) + "/" + String(remote_cmd_count));
+                }
+            }
+            else if (cmd.type == IR_CMD_REMOTE_DELETE)
+            {
+                String path = selected_file_path;
+                int deleteIndex = remote_cmd_index;
+
+                if (path.length() == 0 || deleteIndex <= 0)
+                {
+                    setStatus("No command selected");
+                }
+                else
+                {
+                    String deletedName = "";
+                    bool fileRemoved = false;
+                    bool deleted = deleteFlipperCommandByIndex(path, deleteIndex, deletedName, fileRemoved);
+
+                    if (!deleted)
+                    {
+                        setStatus("Delete failed");
+                    }
+                    else
+                    {
+                        dir_cache_valid = false;
+                        if (fileRemoved)
+                        {
+                            remote_cmd_count = 0;
+                            current_state = APP_FILE_BROWSER;
+                            loadDirectory(current_path);
+                            setStatus("Deleted " + deletedName + " (file empty)");
+                        }
+                        else
+                        {
+                            remote_cmd_count = countCommandsInFile(path);
+                            if (remote_cmd_count <= 0)
+                            {
+                                current_state = APP_FILE_BROWSER;
+                                loadDirectory(current_path);
+                                setStatus("Deleted " + deletedName);
+                            }
+                            else
+                            {
+                                if (remote_cmd_index > remote_cmd_count)
+                                    remote_cmd_index = remote_cmd_count;
+
+                                if (loadFlipperCommandByIndex(path, remote_cmd_index))
+                                    setStatus("Deleted " + deletedName);
+                                else
+                                    setStatus("Deleted; reload failed");
+                            }
+                        }
+                    }
                 }
             }
             else if (cmd.type == IR_CMD_UNIV_SEND)

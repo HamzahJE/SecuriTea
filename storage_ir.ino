@@ -236,6 +236,109 @@ int countCommandsInFile(const String &path)
     return count;
 }
 
+bool deleteFlipperCommandByIndex(const String &path, int target_index, String &deletedName, bool &fileRemoved)
+{
+    deletedName = "";
+    fileRemoved = false;
+
+    if (target_index <= 0)
+        return false;
+
+    String tmpPath = path + ".tmp";
+    String backupPath = path + ".bak";
+
+    lockSD();
+    File source = SD.open(path);
+    if (!source)
+    {
+        unlockSD();
+        return false;
+    }
+
+    SD.remove(tmpPath.c_str());
+    File temp = SD.open(tmpPath, FILE_WRITE);
+    if (!temp)
+    {
+        source.close();
+        unlockSD();
+        return false;
+    }
+
+    int commandIndex = 0;
+    int keptCommands = 0;
+    bool skippingTarget = false;
+    bool found = false;
+
+    while (source.available())
+    {
+        String line = source.readStringUntil('\n');
+        String trimmed = line;
+        trimmed.trim();
+
+        if (trimmed.startsWith("name: "))
+        {
+            commandIndex++;
+            bool isTarget = (commandIndex == target_index);
+            skippingTarget = isTarget;
+
+            if (isTarget)
+            {
+                deletedName = trimmed.substring(6);
+                deletedName.trim();
+                found = true;
+                continue;
+            }
+
+            keptCommands++;
+        }
+
+        if (!skippingTarget)
+            temp.println(line);
+
+        yield();
+    }
+
+    source.close();
+    temp.close();
+
+    if (!found)
+    {
+        SD.remove(tmpPath.c_str());
+        unlockSD();
+        return false;
+    }
+
+    if (keptCommands <= 0)
+    {
+        SD.remove(path.c_str());
+        SD.remove(tmpPath.c_str());
+        fileRemoved = true;
+        unlockSD();
+        return true;
+    }
+
+    SD.remove(backupPath.c_str());
+    bool movedOriginal = SD.rename(path.c_str(), backupPath.c_str());
+    if (!movedOriginal)
+    {
+        SD.remove(tmpPath.c_str());
+        unlockSD();
+        return false;
+    }
+
+    bool movedTemp = SD.rename(tmpPath.c_str(), path.c_str());
+    if (!movedTemp)
+    {
+        SD.rename(backupPath.c_str(), path.c_str());
+        unlockSD();
+        return false;
+    }
+
+    SD.remove(backupPath.c_str());
+    unlockSD();
+    return true;
+}
+
 bool loadUniversalCommandList(const String &path)
 {
     univ_cmd_count = 0;

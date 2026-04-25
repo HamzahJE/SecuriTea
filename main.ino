@@ -149,6 +149,7 @@ enum IrCommandType
 {
   IR_CMD_TRANSMIT_CURRENT,
   IR_CMD_REMOTE_SEND_ALL,
+  IR_CMD_REMOTE_DELETE,
   IR_CMD_UNIV_SEND,
   IR_CMD_LEARN_START,
   IR_CMD_LEARN_STOP,
@@ -158,7 +159,8 @@ enum IrCommandType
 enum RemoteSendMode
 {
   REMOTE_SEND_ONE,
-  REMOTE_SEND_LOOP
+  REMOTE_SEND_LOOP,
+  REMOTE_SEND_DELETE
 };
 RemoteSendMode remote_send_mode = REMOTE_SEND_ONE;
 
@@ -276,7 +278,7 @@ void setup()
   // Boot SD
   pinMode(SD_MISO, INPUT_PULLUP);
   sdSPI.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-
+  delay(1000);
   lockSD();
   bool sdOk = SD.begin(SD_CS, sdSPI, 4000000);
   unlockSD();
