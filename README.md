@@ -72,3 +72,7 @@ Use your Arduino/ESP32 workflow in VS Code:
 ## Name
 
 SecuriTea means "spilling the tea about security" - practical security tooling with a fun identity.
+
+##For ir files checkout these repos
+https://github.com/flipperdevices/flipperzero-firmware
+https://github.com/Lucaslhm/Flipper-IRDB
