@@ -689,9 +689,8 @@ void uiTask(void *pvParameters)
         UiSnapshot snap = snapshotUi();
         sleepDisplayIfIdle(now, snap);
 
-        // Draw when something changed, or when kUiHeartbeatMs has passed. The heartbeat is set
-        // to one frame for now, so the screen is redrawn every loop exactly as the original
-        // firmware did. Raise kUiHeartbeatMs only after a board test confirms nothing else changes.
+        // Draw when something changed, or when kUiHeartbeatMs has passed (the footer marquee
+        // needs the heartbeat). With 33 this is the original's redraw-every-frame behaviour.
         bool due = g_uiDirty || uiSnapshotChanged(snap, lastDrawn) || now - lastDrawMs >= kUiHeartbeatMs;
         if (!g_displayAsleep && due)
         {
