@@ -47,9 +47,7 @@ constexpr int kJoyLowThreshold = 1000;   // ADC counts; below = stick pushed one
 constexpr int kJoyHighThreshold = 3000;  // ADC counts; above = stick pushed the other way
 constexpr unsigned long kJoyRepeatMs = 250;
 constexpr unsigned long kUiFrameMs = 33;
-constexpr unsigned long kUiHeartbeatMs = 250;   // redraw at least this often; 33 = every frame (original),
-                                                // 250 = only on change plus a slow heartbeat (step 1 of the
-                                                // timing changes, under board test since 2026-11-09)
+constexpr unsigned long kUiHeartbeatMs = 250;   // redraw at least this often (the footer marquee needs it)
 constexpr unsigned long kIdleDisplayOffMs = 180000;
 constexpr unsigned long kSdPowerSettleMs = 1000; // card power-up to the mount, the original firmware's value
 constexpr int kSdBootMountTries = 6;             // boot: SD.begin attempts before giving up (card may be settling)

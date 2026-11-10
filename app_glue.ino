@@ -1,6 +1,7 @@
 // ==========================================
 // APP GLUE: STORAGE AND IR RESULTS -> SHARED STATE
 // ==========================================
+// Declared for app code in app_glue.h.
 // The SD card itself is in storage.h/.cpp and the IR hardware in ir_engine.h/.cpp. Both return
 // results and reasons; the functions here turn those into what the user sees (status line,
 // learn phase, button name) and keep the UI's own view of the directory and the command index.

@@ -343,8 +343,7 @@ void irTask(void *pvParameters)
     while (true)
     {
         // While learning, wake every kIrPollMs to poll the receiver. Otherwise block on the
-        // queue until a command arrives (step 2 of the timing changes, under board test since
-        // 2026-11-09; the original woke every 15 ms always).
+        // queue until a command arrives.
         TickType_t wait = learn.listening ? pdMS_TO_TICKS(kIrPollMs) : portMAX_DELAY;
         IrCommand cmd;
         if (xQueueReceive(g_irCommandQueue, &cmd, wait) == pdTRUE)

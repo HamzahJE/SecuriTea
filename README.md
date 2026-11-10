@@ -1,6 +1,6 @@
 # SecuriTea
 Spilling the tea about security.
-![alt text](images/securitea.png)
+![SecuriTea on a Heltec WiFi LoRa 32 V3 with a joystick, IR LED and microSD module](images/securitea.png)
 
 SecuriTea is an open-source handheld IR tool on an ESP32-S3, built as a Flipper Zero style
 remake. It reads and writes Flipper `.ir` files, so remotes from
@@ -47,7 +47,7 @@ All pin assignments live in `board_config.h`:
 | `input.h/.cpp` | the joystick |
 | `app.h`, `launcher.cpp` | the `App` interface and the launcher that runs the current app |
 | `ir_app.h/.cpp` | the infrared app: menus, browser, remote view, learn (all its state is inside) |
-| `app_glue.h`, `storage_ir.ino` | what apps may call in the sketch; storage and IR results turned into status text |
+| `app_glue.h`, `app_glue.ino` | what apps may call in the sketch; storage and IR results turned into status text |
 | `tasks.ino` | `uiTask` (drives the current app) and `irTask` (send, delete, learn jobs) |
 | `helpers.ino` | shared-state setters, cancel counter, queue helpers, diagnostics |
 | `ui_layout.h/.cpp` | OLED drawing primitives |

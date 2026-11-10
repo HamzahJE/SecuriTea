@@ -8,7 +8,7 @@
 #include "ir_file.h"
 
 // Everything that talks to the SD card. Owns the SPI bus object, the SD mutex and the mount
-// flag. Rules, in force since 2026-11-09 (see "SD card rules" in CLAUDE.md):
+// flag. Rules (see "SD card rules" in CLAUDE.md):
 //   - the card is mounted in setup() and otherwise touched only when the user asks for a file;
 //   - nothing here writes shared state or UI globals; results and reasons go back to the caller,
 //     which also means no shared-state lock can ever be taken while the SD lock is held;
@@ -396,14 +396,6 @@ bool storageMount()
     s_mounted = SD.begin(board::kSdCsPin, s_spi, board::kSdSpiHz);
     unlockSD();
     return s_mounted;
-}
-
-bool storageMounted()
-{
-    lockSD();
-    bool mounted = s_mounted;
-    unlockSD();
-    return mounted;
 }
 
 // uiTask, every frame. While the card is not mounted (the boot mount failed, or the card stopped

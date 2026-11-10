@@ -4,8 +4,8 @@
 #include "storage.h"
 #include "ui_layout.h"
 
-// Every function below was moved verbatim from the sketch on 2026-11-09; the only edit is that
-// the UI-owned globals became members (g_name -> name_). The original comments were kept.
+// The handlers and the screen model of the infrared app. The app's state lives in the members
+// of IrApp; only uiTask calls anything here.
 
 namespace
 {

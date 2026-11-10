@@ -17,8 +17,6 @@ bool storageInitBus();
 // One mount attempt. Returns true if the card is mounted afterwards.
 bool storageMount();
 
-bool storageMounted();
-
 enum class StorageTick
 {
     NoChange,
