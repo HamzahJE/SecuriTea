@@ -2,7 +2,7 @@
 // FREERTOS TASKS
 // ==========================================
 // uiTask (core 1, prio 1) owns the screen, the joystick and every UI global.
-// irTask (core 0, prio 2) owns the IR LED, the receiver and its own working payload.
+// irTask (core 0, prio 2) owns the IR hardware (through ir_engine) and its own working payload.
 // They talk only through g_irCommandQueue (UI -> IR) and g_irEventQueue (IR -> UI).
 
 // ---- uiTask private state -------------------------------------------------------------
@@ -780,12 +780,12 @@ void handleIrCommand(const IrCommand &cmd, IrPayload &payload, LearnSession &lea
             // four. Call it once per listening session; "capture again" only re-arms.
             if (!learn.listening)
             {
-                g_irrecv.enableIRIn();
+                irListenStart();
                 learn.listening = true;
             }
             else
             {
-                g_irrecv.resume();
+                irListenRearm();
             }
             learn.captured = false;
             setLearnPhase(LearnPhase::Listening);
@@ -796,7 +796,7 @@ void handleIrCommand(const IrCommand &cmd, IrPayload &payload, LearnSession &lea
             // disableIRIn() frees that timer; calling it twice would free it twice.
             if (learn.listening)
             {
-                g_irrecv.disableIRIn();
+                irListenStop();
                 learn.listening = false;
             }
             learn.captured = false;

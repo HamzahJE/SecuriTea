@@ -1,10 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include "SSD1306Wire.h"
-#include <IRremoteESP8266.h>
-#include <IRrecv.h>
-#include <IRutils.h>
-#include <IRsend.h>
 #include <SPI.h>
 #include <SD.h>
 #include <freertos/FreeRTOS.h>
@@ -13,6 +9,7 @@
 #include "board_config.h"
 #include "app_state.h"
 #include "ir_file.h"
+#include "ir_engine.h"
 #include "ui_layout.h"
 #include "ui.h"
 #include "input.h"
@@ -21,9 +18,6 @@
 // HARDWARE OBJECTS
 // ==========================================
 SSD1306Wire g_display(board::kOledAddress, SDA_OLED, SCL_OLED);
-IRrecv g_irrecv(board::kIrRecvPin, 1024, 50, true);
-decode_results g_irResults;
-IRsend g_irsend(board::kIrLedPin);
 
 // External SPI bus (FSPI): SD card today, PN532 NFC later. Pins live in board_config.h.
 SPIClass g_sdSpi(FSPI);
@@ -98,7 +92,7 @@ void setup()
     g_display.setFont(ArialMT_Plain_10);
 
     // Boot IR
-    g_irsend.begin();
+    irEngineBegin();
 
     // Sync primitives
     g_stateMutex = xSemaphoreCreateMutex();
