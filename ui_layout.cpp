@@ -2,13 +2,17 @@
 
 #include "SSD1306Wire.h"
 
-extern SSD1306Wire display;
+extern SSD1306Wire g_display;
 
-static constexpr int kUiHeaderY = 0;
-static constexpr int kUiDividerY = 12;
-static constexpr int kUiListStartY = 16;
-static constexpr int kUiListStepY = 12;
-static constexpr int kUiFooterY = 54;
+int listWindowStart(int selected, int len)
+{
+    int start = max(0, selected - 1);
+    if (start > len - 3 && len >= 3)
+    {
+        start = len - 3;
+    }
+    return start;
+}
 
 String trimToWidth(const String &s, int maxChars)
 {
@@ -21,12 +25,12 @@ String trimToWidth(const String &s, int maxChars)
 
 void drawHeader(const String &title, const String &rightBadge, bool badgeSelected)
 {
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    g_display.setTextAlignment(TEXT_ALIGN_LEFT);
 
     if (rightBadge.length() == 0)
     {
-        display.drawString(0, kUiHeaderY, title);
-        display.drawLine(0, kUiDividerY, 128, kUiDividerY);
+        g_display.drawString(0, kUiHeaderY, title);
+        g_display.drawLine(0, kUiDividerY, 128, kUiDividerY);
         return;
     }
 
@@ -37,25 +41,25 @@ void drawHeader(const String &title, const String &rightBadge, bool badgeSelecte
     const int boxY = 0;
     const int titleMaxChars = max(6, (boxX - 2) / 6);
 
-    display.drawString(0, kUiHeaderY, trimToWidth(title, titleMaxChars));
+    g_display.drawString(0, kUiHeaderY, trimToWidth(title, titleMaxChars));
 
     if (badgeSelected)
-        display.drawRect(boxX, boxY, boxW, boxH);
+        g_display.drawRect(boxX, boxY, boxW, boxH);
 
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(boxX + boxW / 2, 1, rightBadge);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.drawLine(0, kUiDividerY, 128, kUiDividerY);
+    g_display.setTextAlignment(TEXT_ALIGN_CENTER);
+    g_display.drawString(boxX + boxW / 2, 1, rightBadge);
+    g_display.setTextAlignment(TEXT_ALIGN_LEFT);
+    g_display.drawLine(0, kUiDividerY, 128, kUiDividerY);
 }
 
 void drawFooter(const String &text)
 {
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    g_display.setTextAlignment(TEXT_ALIGN_LEFT);
 
     const int kVisibleChars = 21;
     if ((int)text.length() <= kVisibleChars)
     {
-        display.drawString(0, kUiFooterY, text);
+        g_display.drawString(0, kUiFooterY, text);
         return;
     }
 
@@ -84,7 +88,7 @@ void drawFooter(const String &text)
         offset = 0;
 
     String shown = loopText.substring(offset, offset + kVisibleChars);
-    display.drawString(0, kUiFooterY, shown);
+    g_display.drawString(0, kUiFooterY, shown);
 }
 
 void drawMenu(const String &title,
@@ -96,12 +100,10 @@ void drawMenu(const String &title,
               bool autoDisplay,
               bool headerBadgeSelected)
 {
-    display.clear();
+    g_display.clear();
     drawHeader(title, headerBadge, headerBadgeSelected);
 
-    int start_idx = max(0, selected - 1);
-    if (start_idx > len - 3 && len >= 3)
-        start_idx = len - 3;
+    int start_idx = listWindowStart(selected, len);
 
     for (int i = 0; i < 3; i++)
     {
@@ -111,37 +113,14 @@ void drawMenu(const String &title,
 
         int y_pos = kUiListStartY + (i * kUiListStepY);
         if (item_idx == selected)
-            display.drawString(0, y_pos, "> " + items[item_idx]);
+            g_display.drawString(0, y_pos, "> " + items[item_idx]);
         else
-            display.drawString(8, y_pos, items[item_idx]);
+            g_display.drawString(8, y_pos, items[item_idx]);
     }
 
     drawFooter(footerText);
     if (autoDisplay)
-        display.display();
-}
-
-void drawStatusPopup(const String &status)
-{
-    if (status.length() == 0)
-        return;
-
-    String shown = status;
-    if (shown.length() > 20)
-        shown = shown.substring(0, 20) + "...";
-
-    int x = 6;
-    int y = 20;
-    int w = 116;
-    int h = 22;
-
-    display.setColor(BLACK);
-    display.fillRect(x, y, w, h);
-    display.setColor(WHITE);
-    display.drawRect(x, y, w, h);
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(64, 27, shown);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
+        g_display.display();
 }
 
 void drawUniversalProgressPopup(const String &name, int current, int total)
@@ -160,11 +139,11 @@ void drawUniversalProgressPopup(const String &name, int current, int total)
     int w = 104;
     int h = 24;
 
-    display.setColor(BLACK);
-    display.fillRect(x, y, w, h);
-    display.setColor(WHITE);
-    display.drawRect(x, y, w, h);
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(64, 28, text);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    g_display.setColor(BLACK);
+    g_display.fillRect(x, y, w, h);
+    g_display.setColor(WHITE);
+    g_display.drawRect(x, y, w, h);
+    g_display.setTextAlignment(TEXT_ALIGN_CENTER);
+    g_display.drawString(64, 28, text);
+    g_display.setTextAlignment(TEXT_ALIGN_LEFT);
 }

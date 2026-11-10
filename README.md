@@ -2,73 +2,114 @@
 Spilling the tea about security.
 ![alt text](images/securitea.png)
 
-SecuriTea is an ESP32-based handheld IR utility that combines:
-- Universal IR brute-force profiles
-- SD card IR file browsing and replay
-- Learn mode to capture IR signals from real remotes and save them to SD
-- OLED joystick-driven interface
+SecuriTea is an open-source handheld IR tool on an ESP32-S3, built as a Flipper Zero style
+remake. It reads and writes Flipper `.ir` files, so remotes from
+[Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) work unchanged.
+
+Features:
+- Universal remote: send every "Power" (or any other group) across a profile of many brands
+- File browser: open any `.ir` file on the SD card, send one command, loop all of them, or delete one
+- Learn mode: capture a signal from a real remote and append it to `/captures/learned.ir`
+- 128x64 OLED and joystick interface, screen sleeps after 3 min idle
 
 ## Hardware
 
-Target device used in this project:
-- Heltec ESP32 LoRa V3 3.2
+- Heltec WiFi LoRa 32 V3 (ESP32-S3, onboard SSD1306 OLED and SX1262 radio)
+- IR receiver module (Learn mode) and IR LED with a driver transistor
+- Analog joystick with push button
+- Micro SD card module on SPI
 
-Main peripherals used:
-- IR receiver module (for Learn mode)
-- IR LED transmitter (for blasting/replay)
-- Joystick (X, Y, button)
-- SD card module (SPI)
-- Built-in OLED display
+All pin assignments live in `board_config.h`:
 
-## Project Structure
+| Function          | GPIO | Notes                              |
+|-------------------|------|------------------------------------|
+| Joystick X        | 3    | ADC                                |
+| Joystick Y        | 4    | ADC                                |
+| Joystick button   | 5    | to GND, internal pull-up           |
+| IR receiver       | 6    |                                    |
+| IR LED            | 7    |                                    |
+| SD SCK / MISO / MOSI | 33 / 34 / 47 | external SPI bus (FSPI)   |
+| SD CS             | 48   |                                    |
+| OLED SDA / SCL / RST | 17 / 18 / 21 | fixed by the board         |
+| PN532 NFC CS / IRQ / RST | 38 / 39 / 40 | reserved, not wired yet |
 
-- `main.ino`: main firmware with UI, SD parser, IR send/receive, and task logic.
+## Project structure
 
-## Core Features
+| File | Contents |
+|------|----------|
+| `securitea.ino` | globals, `setup()`, task creation |
+| `app_state.h` | shared types, limits, tunables |
+| `board_config.h` | every pin and bus assignment |
+| `ir_file.h/.cpp` | Flipper `.ir` parser and validation (no globals) |
+| `storage_ir.ino` | SD card access, safe delete, IR transmit and capture |
+| `tasks.ino` | `uiTask` (screen and joystick) and `irTask` (LED, receiver) |
+| `helpers.ino` | locks, shared-state setters, queue helpers, diagnostics |
+| `ui_layout.h/.cpp` | OLED drawing primitives |
 
-1. Universal Remote
-- Choose a device group (TV, AC, Projector)
-- Runs profile-based brute-force transmit from SD files:
-  - `/univ_tv.ir`
-  - `/univ_ac.ir`
-  - `/univ_proj.ir`
+Two FreeRTOS tasks run on separate cores. The UI task owns the screen and every UI variable.
+The IR task owns the LED and receiver. They communicate only through two queues: commands go
+UI to IR and carry everything the job needs (file path, command index, timing); results come
+back IR to UI. One task owns each piece of data.
 
-2. File Browser
-- Navigate SD directories on OLED
-- Open IR files and transmit captured raw commands
+## SD card layout
 
-3. Learn New Remote
-- Listens for an IR signal through the receiver
-- Captures raw timing data
-- Saves new commands to:
-  - `/captures/learned.ir`
-- Auto-names learned commands as:
-  - `Learned_001`, `Learned_002`, etc.
+```
+/univ_tv.ir, /univ_ac.ir, /univ_proj.ir, /univ_audio.ir   universal profiles
+/captures/learned.ir                                       learned commands (created on first save)
+/<anything>/*.ir                                           browse and send (Flipper-IRDB layout works)
+```
 
-## SD Card Files
+A universal profile is an ordinary `.ir` file whose command names are the group names
+("Power", "Vol+", ...). Every command named "Power" is sent in turn when you pick Power.
 
-Expected profile files for universal mode:
-- `/univ_tv.ir`
-- `/univ_ac.ir`
-- `/univ_proj.ir`
+## `.ir` file format
 
-Learned commands are appended to:
-- `/captures/learned.ir`
+```
+name: Power
+type: raw
+frequency: 38000
+duty_cycle: 0.33
+data: 9000 4500 560 560 560 1690 ...
 
-## Build and Flash
+name: Mute
+type: parsed
+protocol: NEC
+address: 04 00 00 00
+command: 08 00 00 00
+```
 
-Use your Arduino/ESP32 workflow in VS Code:
-1. Select the correct board for Heltec ESP32 LoRa V3 3.2
-2. Select port/programmer
-3. Verify (compile)
-4. Upload
+Raw signals are validated on load: every mark or space must be 1 to 20000 us, the whole
+signal at most 2 s and at most 500 values, and the carrier between 10 and 56 kHz. Parsed
+protocols supported for sending: NEC, NECext, Samsung32, RC5, RC6, SIRC. Files are capped at
+1000 commands.
 
-## Notes
+## Controls
 
-- If universal mode appears inactive, confirm the required profile file exists on SD.
-- If Learn mode does not capture, verify IR receiver wiring and remote alignment.
-- Keep SD card formatted and readable by the firmware.
+| Screen | Up / Down | Right | Left | Button |
+|--------|-----------|-------|------|--------|
+| Menus | move | | back | select |
+| Universal remote | pick group | select mode badge | back / cancel | send group (or toggle Single / Aggressive) |
+| File browser | move | cycle A-Z filter | clear filter, then back | open |
+| Remote view | previous / next command | select mode badge | back (stops a loop) | send, loop all, or delete (press twice) |
+| Learn | | | back | save capture / listen again |
 
-## Name
+## Build and flash
 
-SecuriTea means "spilling the tea about security" - practical security tooling with a fun identity.
+Board, core and library versions are pinned in `sketch.yaml`.
+
+```
+arduino-cli compile --build-path build .
+arduino-cli upload -p /dev/cu.usbserial-0001 --fqbn esp32:esp32:heltec_wifi_lora_32_V3 --input-dir build .
+```
+
+Or open the folder in the Arduino IDE, choose "Heltec WiFi LoRa 32 (V3)" and upload.
+Serial at 115200 prints the reset reason at boot and heap and stack headroom every 5 s.
+
+## Responsible use
+
+Only send IR to equipment you own or are allowed to control. The universal profiles can
+switch off displays in public places; that is someone else's property.
+
+## License
+
+MIT, see `LICENSE`.

@@ -1,0 +1,15 @@
+# Run: clang-format -i *.ino *.h *.cpp   (clang-format is not on PATH; see CLAUDE.md)
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+BreakBeforeBraces: Allman
+ColumnLimit: 110
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+InsertBraces: true
+PointerAlignment: Right
+SortIncludes: Never
+IndentCaseLabels: true
