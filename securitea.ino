@@ -14,6 +14,7 @@
 #include "app_state.h"
 #include "ir_file.h"
 #include "ui_layout.h"
+#include "ui.h"
 #include "input.h"
 
 // ==========================================
@@ -32,11 +33,6 @@ SPIClass g_sdSpi(FSPI);
 // ==========================================
 AppState g_state = AppState::MainMenu;
 int g_menuIndex = 0;
-
-const String kMainMenu[] = {"Universal Remote", "File Browser", "Learn New"};
-const int kMainMenuLen = 3;
-const String kUnivMenu[] = {"TVs", "ACs", "Projectors", "Audio"};
-const int kUnivMenuLen = 4;
 
 String g_univCmdItems[kMaxUnivItems];
 int g_univCmdCount = 0;

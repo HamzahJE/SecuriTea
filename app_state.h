@@ -231,6 +231,9 @@ struct SharedState
     String learnDetail;
 };
 
+constexpr int kMainMenuLen = 3; // entries of the main menu (the texts live in ui.cpp)
+constexpr int kUnivMenuLen = 4; // entries of the universal-remote device menu
+
 // What the renderer needs from SharedState, copied under the lock once per frame.
 struct UiSnapshot
 {
@@ -245,4 +248,42 @@ struct UiSnapshot
     LearnPhase learnPhase = LearnPhase::Idle;
     String learnProtocol;
     String learnDetail;
+};
+
+// Everything a screen needs in order to draw itself. uiTask fills one of these per frame from
+// the UI-owned globals and hands it to drawScreen() in ui.h, so the ui module has exactly one
+// input and never reaches into the rest of the program. `univItems` points at the UI-owned
+// command list and is only valid during the drawScreen() call it was built for.
+struct UiModel
+{
+    AppState state = AppState::MainMenu;
+    int menuIndex = 0;
+
+    // Universal remote
+    bool headerModeSelected = false;
+    String universalBadge;      // "SING" or "AGGR"
+    String targetDevice;        // "TV", "AC", ...
+    String univProfilePath;
+    const String *univItems = nullptr;
+    int univCount = 0;
+
+    // File browser: only the rows on screen are built
+    String browserPath;
+    String browserFilterLabel;
+    int browserCount = 0;       // rows in the whole view
+    int browserWindowStart = 0; // view index of browserRows[0]
+    int browserShown = 0;       // rows actually filled below
+    String browserRows[kMenuVisibleRows];
+
+    // Remote view
+    String fileName;
+    int cmdIndex = 1;
+    int cmdCount = 0;
+    String sendModeBadge;       // "ONE", "LOOP" or "DEL"
+    bool deleteMode = false;
+    bool modeSelected = false;
+    bool deleteArmed = false;
+    bool deletePending = false;
+
+    UiSnapshot shared;          // the fields that come from the other task
 };
