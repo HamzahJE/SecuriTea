@@ -20,7 +20,7 @@ void displayReset(void)
 
 // ---- Locks -----------------------------------------------------------------------------
 // g_stateMutex guards g_shared only: hold it for copies, never across SD, IR or drawing.
-// g_sdMutex guards every SD sequence. Never take g_stateMutex while holding g_sdMutex.
+// The SD lock lives inside storage.cpp and is never held outside it.
 void lockState(void)
 {
     xSemaphoreTake(g_stateMutex, portMAX_DELAY);
@@ -29,16 +29,6 @@ void lockState(void)
 void unlockState(void)
 {
     xSemaphoreGive(g_stateMutex);
-}
-
-void lockSD(void)
-{
-    xSemaphoreTake(g_sdMutex, portMAX_DELAY);
-}
-
-void unlockSD(void)
-{
-    xSemaphoreGive(g_sdMutex);
 }
 
 // ---- Shared state setters (any task) -------------------------------------------------

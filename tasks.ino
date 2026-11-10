@@ -679,7 +679,7 @@ void irDeleteCommand(const IrCommand &cmd)
     String deletedName;
     bool fileRemoved = false;
     const char *reason = nullptr;
-    evt.success = deleteFlipperCommandByIndex(path, cmd.commandIndex, deletedName, fileRemoved, reason);
+    evt.success = storageDeleteCommand(path, cmd.commandIndex, deletedName, fileRemoved, reason);
     evt.fileRemoved = fileRemoved;
     strlcpy(evt.text, evt.success ? deletedName.c_str() : (reason ? reason : "Delete failed"), sizeof(evt.text));
     queueIrEvent(evt); // uiTask decides the screen, the list and the index
@@ -696,7 +696,7 @@ void irUniversalSend(const IrCommand &cmd, IrPayload &payload)
     }
 
     // g_irIndex is irTask's own index. A group such as "Power" can have hundreds of entries.
-    int matchCount = buildGroupIndex(profilePath, groupName, g_irIndex);
+    int matchCount = storageIndexGroup(profilePath, groupName, g_irIndex);
     if (matchCount <= 0)
     {
         setStatus("No cmds for " + groupName);
