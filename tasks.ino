@@ -474,153 +474,45 @@ void sleepDisplayIfIdle(unsigned long now, const UiSnapshot &snap)
     }
 }
 
-// ---- Screens ----------------------------------------------------------------------------
-void drawFileBrowserScreen()
+// ---- Screen model ------------------------------------------------------------------------
+// Gathers what the screens need from the UI-owned globals. The drawing itself is in ui.cpp.
+UiModel buildUiModel(const UiSnapshot &snap)
 {
-    String title = "Path: " + g_currentPath;
-    if (g_dirViewCount == 0)
-    {
-        g_display.clear();
-        drawHeader(title, getFileBrowserFilterLabel());
-        g_display.drawString(0, kUiLine1Y + 4, "(No items)");
-        drawFooter("[>]Filter [<]Clr/Back");
-        g_display.display();
-        return;
-    }
+    UiModel m;
+    m.state = g_state;
+    m.menuIndex = g_menuIndex;
 
-    // Build only the rows on screen, not all 260.
-    int start = listWindowStart(g_menuIndex, g_dirViewCount);
-    String rows[kMenuVisibleRows];
-    int shown = 0;
-    for (int i = 0; i < kMenuVisibleRows && start + i < g_dirViewCount; i++)
-    {
-        rows[shown++] = dirRowLabel(start + i);
-    }
-    drawMenu(title, rows, shown, g_menuIndex - start, "[>]Filter [BTN]Open [<]Clr/Back",
-             getFileBrowserFilterLabel());
-}
+    m.headerModeSelected = g_headerModeSelected;
+    m.universalBadge = getUniversalModeBadge();
+    m.targetDevice = g_targetDevice;
+    m.univProfilePath = g_univProfilePath;
+    m.univItems = g_univCmdItems;
+    m.univCount = g_univCmdCount;
 
-void drawUniversalRemoteScreen(const UiSnapshot &snap)
-{
-    String title = g_targetDevice + " Remote";
-    if (g_univCmdCount <= 0)
+    if (g_state == AppState::FileBrowser)
     {
-        g_display.clear();
-        drawHeader(title, getUniversalModeBadge());
-        g_display.drawString(0, kUiLine1Y + 4, "No commands found");
-        g_display.drawString(0, kUiLine2Y + 4, "File: " + g_univProfilePath);
-        drawFooter("[<] Back");
-        g_display.display();
-        return;
-    }
-
-    drawMenu(title, g_univCmdItems, g_univCmdCount, g_menuIndex, "[<] Back | [BTN] Select",
-             getUniversalModeBadge(), false);
-    if (snap.univSending)
-    {
-        drawUniversalProgressPopup(snap.univProgressName, snap.univProgressCurrent, snap.univProgressTotal);
-    }
-    g_display.display();
-}
-
-void drawRemoteViewScreen(const UiSnapshot &snap)
-{
-    g_display.clear();
-    drawHeader("<- Back   Blaster", getRemoteSendModeBadge(), g_remoteModeSelected);
-    g_display.drawString(0, kUiLine1Y, "File: " + g_selectedFileName);
-    // While a send is running, show the name going out (irTask's field). Otherwise show the
-    // selected command (uiTask's field). The two never overwrite each other.
-    bool sending = snap.transmitting && snap.sendingName.length() > 0;
-    g_display.drawString(0, kUiLine2Y, sending ? "Tx: " + snap.sendingName : "Btn: " + snap.btnName);
-    g_display.drawString(0, kUiLine3Y, "Cmd: " + String(g_remoteCmdIndex) + "/" + String(g_remoteCmdCount));
-
-    if (g_deletePending)
-    {
-        drawFooter("[ DELETING... ]");
-    }
-    else if (snap.transmitting)
-    {
-        drawFooter("[ TRANSMITTING... ]");
-    }
-    else if (g_remoteSendMode == RemoteSendMode::Delete)
-    {
-        drawFooter(g_deleteArmed ? "[BTN] Confirm delete" : "[v^]Cmd [>]Mode [BTN]Delete");
-    }
-    else
-    {
-        drawFooter("[v^]Cmd [>]Mode [BTN]Send");
-    }
-    g_display.display();
-}
-
-void drawLearnScreen(const UiSnapshot &snap)
-{
-    g_display.clear();
-    drawHeader("Learn New Remote");
-    g_display.drawString(0, kUiLine1Y, snap.status);
-
-    switch (snap.learnPhase)
-    {
-        case LearnPhase::Listening:
-            g_display.drawString(0, kUiLine2Y, "Waiting for signal...");
-            drawFooter("[<] Back");
-            break;
-        case LearnPhase::Captured:
+        m.browserPath = g_currentPath;
+        m.browserFilterLabel = getFileBrowserFilterLabel();
+        m.browserCount = g_dirViewCount;
+        m.browserWindowStart = listWindowStart(g_menuIndex, g_dirViewCount);
+        // Build only the rows on screen, not all 260.
+        for (int i = 0; i < kMenuVisibleRows && m.browserWindowStart + i < g_dirViewCount; i++)
         {
-            String proto = snap.learnProtocol.length() ? snap.learnProtocol : "UNKNOWN";
-            g_display.drawString(0, kUiLine2Y, trimToWidth("Proto: " + proto, 21));
-            if (snap.learnDetail.length())
-            {
-                g_display.drawString(0, kUiLine3Y, trimToWidth(snap.learnDetail, 21));
-            }
-            drawFooter("[BTN] Save | [<] Back");
-            break;
+            m.browserRows[m.browserShown++] = dirRowLabel(m.browserWindowStart + i);
         }
-        case LearnPhase::Saved:
-            g_display.drawString(0, kUiLine2Y, "Saved to /captures/");
-            if (snap.learnProtocol.length())
-            {
-                g_display.drawString(0, kUiLine3Y, trimToWidth("Proto: " + snap.learnProtocol, 21));
-            }
-            drawFooter("[BTN] Capture Again");
-            break;
-        case LearnPhase::Error:
-            g_display.drawString(0, kUiLine2Y, "Capture error");
-            drawFooter("[BTN] Retry | [<] Back");
-            break;
-        default:
-            g_display.drawString(0, kUiLine2Y, "Preparing listener...");
-            drawFooter("[<] Back");
-            break;
     }
-    g_display.display();
-}
 
-void drawScreen(const UiSnapshot &snap)
-{
-    switch (g_state)
-    {
-        case AppState::MainMenu:
-            drawMenu("SecuriTea OS", kMainMenu, kMainMenuLen, g_menuIndex);
-            break;
-        case AppState::UniversalMenu:
-            drawMenu("Universal Remote", kUnivMenu, kUnivMenuLen, g_menuIndex,
-                     "[v^]Scroll [>]Mode [BTN]Toggle/Pick [<]Back", getUniversalModeBadge(), true,
-                     g_headerModeSelected);
-            break;
-        case AppState::FileBrowser:
-            drawFileBrowserScreen();
-            break;
-        case AppState::UniversalRemote:
-            drawUniversalRemoteScreen(snap);
-            break;
-        case AppState::RemoteView:
-            drawRemoteViewScreen(snap);
-            break;
-        case AppState::Learn:
-            drawLearnScreen(snap);
-            break;
-    }
+    m.fileName = g_selectedFileName;
+    m.cmdIndex = g_remoteCmdIndex;
+    m.cmdCount = g_remoteCmdCount;
+    m.sendModeBadge = getRemoteSendModeBadge();
+    m.deleteMode = g_remoteSendMode == RemoteSendMode::Delete;
+    m.modeSelected = g_remoteModeSelected;
+    m.deleteArmed = g_deleteArmed;
+    m.deletePending = g_deletePending;
+
+    m.shared = snap;
+    return m;
 }
 
 // ---- uiTask --------------------------------------------------------------------------------
@@ -671,7 +563,7 @@ void uiTask(void *pvParameters)
         bool due = g_uiDirty || uiSnapshotChanged(snap, lastDrawn) || now - lastDrawMs >= kUiHeartbeatMs;
         if (!g_displayAsleep && due)
         {
-            drawScreen(snap);
+            drawScreen(buildUiModel(snap));
             lastDrawn = snap;
             lastDrawMs = now;
             g_uiDirty = false;
