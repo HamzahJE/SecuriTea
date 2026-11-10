@@ -47,10 +47,14 @@ public:
         tok_[tokLen_] = '\0';
         tokLen_ = 0;
         unsigned long value = strtoul(tok_, nullptr, 10);
-        if (value == 0 || value > kMaxPulseUs)
+        if (value == 0)
         {
-            err_ = "Pulse out of range";
+            err_ = "Pulse of 0 us";
             return false;
+        }
+        if (value > kMaxPulseUs)
+        {
+            value = kMaxPulseUs; // a gap longer than the sender can time becomes its maximum
         }
         if (out_.rawLen >= kMaxRawBuffer)
         {
@@ -60,7 +64,7 @@ public:
         totalUs_ += value;
         if (totalUs_ > kMaxSignalUs)
         {
-            err_ = "Signal over 2 s";
+            err_ = "Signal over 4 s";
             return false;
         }
         out_.raw[out_.rawLen++] = (uint16_t)value;

@@ -14,6 +14,7 @@
 #include "app_state.h"
 #include "ir_file.h"
 #include "ui_layout.h"
+#include "input.h"
 
 // ==========================================
 // HARDWARE OBJECTS
@@ -128,6 +129,25 @@ void setup()
     lockSD();
     g_sdMounted = SD.begin(board::kSdCsPin, g_sdSpi, board::kSdSpiHz);
     unlockSD();
+
+    // The first boot after an upload often finds the card still recovering: during the upload
+    // the chip's pins float for twenty seconds or more, the card's chip select among them, and
+    // a card with no pull-up on that line is clocked with noise the whole time. Pressing RST a
+    // moment later always worked. So instead of giving up after one try, wait and try again,
+    // a few times, with the card left alone in between. This never runs on a mounted card.
+    for (int attempt = 2; !g_sdMounted && attempt <= kSdBootMountTries; attempt++)
+    {
+        Serial.printf("SD mount failed, waiting %lu ms before try %d of %d\n", kSdBootMountRetryMs, attempt,
+                      kSdBootMountTries);
+        g_display.clear();
+        g_display.drawString(0, 0, "Waiting for SD card");
+        g_display.drawString(0, 14, "try " + String(attempt) + " of " + String(kSdBootMountTries));
+        g_display.display();
+        delay(kSdBootMountRetryMs);
+        lockSD();
+        g_sdMounted = SD.begin(board::kSdCsPin, g_sdSpi, board::kSdSpiHz);
+        unlockSD();
+    }
 
     if (!g_sdMounted)
     {

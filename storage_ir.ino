@@ -764,10 +764,8 @@ bool captureLearnSignal(IrPayload &out)
     }
 
     // rawbuf[0] is the gap before the signal, so the signal is entries 1..rawlen-1, in ticks of
-    // kRawTick us, alternating mark, space, mark... A capture can contain the first frame plus
-    // repeat frames after a long gap. Keep the first frame only: stop at the first pulse the
-    // .ir loader would reject (0 or over kMaxPulseUs) or when the 2 s total is reached, so
-    // everything this function saves can be loaded and sent again.
+    // kRawTick us, alternating mark, space, mark... Stop at anything the .ir loader would not
+    // load back (a 0, or the total going past kMaxSignalUs), so every saved capture replays.
     uint16_t localLen = 0;
     uint32_t totalUs = 0;
     for (uint16_t i = 1; i < g_irResults.rawlen && localLen < kMaxRawBuffer; i++)

@@ -78,8 +78,9 @@ address: 04 00 00 00
 command: 08 00 00 00
 ```
 
-Raw signals are validated on load: every mark or space must be 1 to 20000 us, the whole
-signal at most 2 s and at most 500 values, and the carrier between 10 and 56 kHz. Parsed
+Raw signals are validated on load: no mark or space may be 0, a value above 65535 us is
+shortened to 65535 us (the longest the sender can time), the whole signal must be at most 4 s
+and at most 500 values, and the carrier between 10 and 56 kHz. Parsed
 protocols supported for sending: NEC, NECext, Samsung32, RC5, RC6, SIRC. Files are capped at
 1000 commands.
 
