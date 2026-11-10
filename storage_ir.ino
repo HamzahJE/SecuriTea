@@ -21,68 +21,6 @@ void sdMountRetryTick(unsigned long now)
     }
 }
 
-// ---- Directory view ---------------------------------------------------------------------------
-void rebuildDirectoryCache(const String &path)
-{
-    storageListDirectory(path, g_dirCache);
-}
-
-// Builds the filtered view (g_dirView) from the cache, rebuilding the cache if needed.
-void loadDirectory(const String &path)
-{
-    g_dirViewCount = 0;
-
-    if (!g_dirCache.valid || path != g_dirCache.path)
-    {
-        rebuildDirectoryCache(path);
-    }
-    if (!g_dirCache.valid)
-    {
-        return;
-    }
-
-    if (path != "/")
-    {
-        g_dirView[g_dirViewCount++] = kDirViewBack;
-    }
-    for (int i = 0; i < g_dirCache.count && g_dirViewCount < kMaxDirItems; i++)
-    {
-        if (matchesFileBrowserFilter(g_dirCache.pool + g_dirCache.nameOffset[i]))
-        {
-            g_dirView[g_dirViewCount++] = (uint16_t)i;
-        }
-    }
-    g_menuIndex = 0;
-}
-
-bool dirRowIsBack(int row)
-{
-    return g_dirView[row] == kDirViewBack;
-}
-
-bool dirRowIsFolder(int row)
-{
-    return dirRowIsBack(row) || g_dirCache.isFolder[g_dirView[row]];
-}
-
-const char *dirRowName(int row)
-{
-    if (dirRowIsBack(row))
-    {
-        return ".. (Back)";
-    }
-    return g_dirCache.pool + g_dirCache.nameOffset[g_dirView[row]];
-}
-
-String dirRowLabel(int row)
-{
-    if (!dirRowIsBack(row) && dirRowIsFolder(row))
-    {
-        return "[DIR] " + String(dirRowName(row));
-    }
-    return String(dirRowName(row));
-}
-
 // ---- Command index and loading -------------------------------------------------------------
 // One scan per file open. After this every command is one seek away.
 int buildCommandIndex(const String &path, CommandIndex &index)
@@ -135,24 +73,6 @@ bool publishCommandAt(const String &path, uint32_t offset)
         return false;
     }
     setButtonName(payload.btnName);
-    return true;
-}
-
-// ---- Universal profiles ------------------------------------------------------------------
-bool loadUniversalCommandList(const String &path)
-{
-    int count = storageListGroups(path, g_univCmdItems, kMaxUnivItems);
-    g_univCmdCount = count < 0 ? 0 : count;
-    if (count < 0)
-    {
-        setStatus("Missing " + path);
-        return false;
-    }
-    if (count == 0)
-    {
-        setStatus("No commands in profile");
-        return false;
-    }
     return true;
 }
 

@@ -12,6 +12,8 @@
 #include "ui_layout.h"
 #include "ui.h"
 #include "input.h"
+#include "app.h"
+#include "ir_app.h"
 
 // ==========================================
 // HARDWARE OBJECTS
@@ -19,33 +21,10 @@
 SSD1306Wire g_display(board::kOledAddress, SDA_OLED, SCL_OLED);
 
 // ==========================================
-// UI-OWNED STATE (written by uiTask only)
+// APPS (uiTask owns their state; see app.h)
 // ==========================================
-AppState g_state = AppState::MainMenu;
-int g_menuIndex = 0;
-
-String g_univCmdItems[kMaxUnivItems];
-int g_univCmdCount = 0;
-String g_univProfilePath = "/univ_tv.ir";
-String g_targetDevice = "TV";
-UniversalMode g_universalMode = UniversalMode::Single;
-bool g_headerModeSelected = false;
-
-// File browser: one cache of the directory, one view of it after filtering.
-DirCache g_dirCache;
-uint16_t g_dirView[kMaxDirItems];
-int g_dirViewCount = 0;
-String g_currentPath = "/";
-int g_fileFilterIndex = 0; // 0=ALL, 1-26=A-Z, 27=#
-
-// Remote view: the open file and its command index.
-String g_selectedFilePath = "";
-String g_selectedFileName = "";
-CommandIndex g_fileIndex;
-int g_remoteCmdIndex = 1;
-int g_remoteCmdCount = 0;
-RemoteSendMode g_remoteSendMode = RemoteSendMode::One;
-bool g_remoteModeSelected = false;
+IrApp g_irApp;
+Launcher g_launcher;
 
 // ==========================================
 // IR-TASK-OWNED STATE (written by irTask only)
@@ -144,6 +123,7 @@ void setup()
     }
 
     logBootDiagnostics(); // after the mount, so nothing new runs before it
+    g_launcher.add(g_irApp);
 
     BaseType_t uiOk =
         xTaskCreatePinnedToCore(uiTask, "UI_Task", kUiTaskStackBytes, NULL, kUiTaskPriority, &g_uiTaskHandle, 1);

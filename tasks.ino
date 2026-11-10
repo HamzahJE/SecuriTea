@@ -1,459 +1,26 @@
 // ==========================================
 // FREERTOS TASKS
 // ==========================================
-// uiTask (core 1, prio 1) owns the screen, the joystick and every UI global.
+// uiTask (core 1, prio 1) owns the screen, the joystick and the running app (see app.h).
 // irTask (core 0, prio 2) owns the IR hardware (through ir_engine) and its own working payload.
 // They talk only through g_irCommandQueue (UI -> IR) and g_irEventQueue (IR -> UI).
 
 // ---- uiTask private state -------------------------------------------------------------
-bool g_uiDirty = true;             // something changed, draw on the next frame
 bool g_displayAsleep = false;
 unsigned long g_lastInputMs = 0;
-bool g_deleteArmed = false;        // first press in Delete mode arms, second press deletes
-unsigned long g_deleteArmedMs = 0;
-bool g_deletePending = false;      // a delete is queued or running; its result has not arrived
 
-// ---- Results from irTask --------------------------------------------------------------
-// Runs on uiTask. uiTask owns g_state, the directory view and the command index, so only
-// uiTask may change them in response to a delete.
-void handleDeleteResult(const IrEvent &evt)
-{
-    g_deletePending = false;
-    if (!evt.success)
-    {
-        setStatus(evt.text[0] ? String(evt.text) : String("Delete failed"));
-        return;
-    }
-
-    g_dirCache.valid = false; // the folder listing may have changed
-    String deletedName = evt.text;
-
-    // The result is about evt.path. If the user has opened a different file since, that file's
-    // index and counters are not ours to touch: refresh the listing and stop.
-    if (g_selectedFilePath != evt.path)
-    {
-        if (g_state == AppState::FileBrowser)
-        {
-            loadDirectory(g_currentPath);
-        }
-        setStatus("Deleted " + deletedName);
-        return;
-    }
-
-    int remaining = evt.fileRemoved ? 0 : buildCommandIndex(g_selectedFilePath, g_fileIndex);
-    if (remaining <= 0)
-    {
-        g_remoteCmdCount = 0;
-        g_fileIndex.count = 0;
-        if (g_state == AppState::RemoteView)
-        {
-            g_state = AppState::FileBrowser;
-        }
-        if (g_state == AppState::FileBrowser)
-        {
-            loadDirectory(g_currentPath);
-        }
-        setStatus("Deleted " + deletedName + (evt.fileRemoved ? " (file empty)" : ""));
-        return;
-    }
-
-    g_remoteCmdCount = remaining;
-    if (g_remoteCmdIndex > g_remoteCmdCount)
-    {
-        g_remoteCmdIndex = g_remoteCmdCount;
-    }
-    if (g_remoteCmdIndex < 1)
-    {
-        g_remoteCmdIndex = 1;
-    }
-    showRemoteCommand(g_remoteCmdIndex);
-    setStatus("Deleted " + deletedName);
-}
-
-void drainIrEvents()
+// Hands every result from irTask to the running app.
+void drainIrEvents(App &app)
 {
     IrEvent evt;
     while (g_irEventQueue && xQueueReceive(g_irEventQueue, &evt, 0) == pdTRUE)
     {
-        if (evt.type == IrEventType::DeleteResult)
-        {
-            handleDeleteResult(evt);
-        }
-        g_uiDirty = true;
-    }
-}
-
-// ---- Input -----------------------------------------------------------------------------
-// The joystick itself lives in input.h/.cpp (class Joystick); this section maps its events
-// onto the current screen.
-int menuLengthForState()
-{
-    switch (g_state)
-    {
-        case AppState::MainMenu:
-            return kMainMenuLen;
-        case AppState::UniversalMenu:
-            return kUnivMenuLen;
-        case AppState::UniversalRemote:
-            return g_univCmdCount;
-        case AppState::FileBrowser:
-            return g_dirViewCount;
-        default:
-            return 0;
-    }
-}
-
-void disarmDelete()
-{
-    g_deleteArmed = false;
-}
-
-void showRemoteCommand(int index)
-{
-    if (index < 1 || index > g_fileIndex.count)
-    {
-        return;
-    }
-    g_remoteCmdIndex = index;
-    publishCommandAt(g_selectedFilePath, g_fileIndex.offsets[index - 1]);
-}
-
-void handleScroll(bool up)
-{
-    int step = up ? -1 : 1;
-
-    if (g_state == AppState::UniversalMenu)
-    {
-        g_headerModeSelected = false;
-    }
-
-    if (g_state == AppState::RemoteView)
-    {
-        g_remoteModeSelected = false;
-        disarmDelete();
-        if (g_deletePending)
-        {
-            return; // the command numbers are about to change; wait for the result
-        }
-        int next = g_remoteCmdIndex + step;
-        if (next >= 1 && next <= g_remoteCmdCount)
-        {
-            showRemoteCommand(next);
-        }
-        return;
-    }
-
-    int len = menuLengthForState();
-    if (len <= 0)
-    {
-        g_menuIndex = 0;
-        return;
-    }
-    if (g_state == AppState::FileBrowser)
-    {
-        g_menuIndex = constrain(g_menuIndex + step, 0, len - 1); // lists do not wrap
-    }
-    else
-    {
-        g_menuIndex = (g_menuIndex + step + len) % len; // menus wrap
-    }
-}
-
-void handleRight()
-{
-    if (g_state == AppState::UniversalMenu)
-    {
-        g_headerModeSelected = true;
-    }
-    else if (g_state == AppState::FileBrowser)
-    {
-        cycleFileBrowserFilter();
-        loadDirectory(g_currentPath);
-        setStatus("Filter: " + getFileBrowserFilterLabel());
-    }
-    else if (g_state == AppState::RemoteView)
-    {
-        g_remoteModeSelected = true;
-        disarmDelete();
-    }
-}
-
-void handleLeft()
-{
-    if (g_state == AppState::UniversalMenu && g_headerModeSelected)
-    {
-        g_headerModeSelected = false;
-    }
-    else if (g_state == AppState::RemoteView && g_remoteModeSelected)
-    {
-        g_remoteModeSelected = false;
-    }
-    else if (g_state == AppState::FileBrowser && g_fileFilterIndex != 0)
-    {
-        resetFileBrowserFilter();
-        loadDirectory(g_currentPath);
-        setStatus("Filter: ALL");
-    }
-    else if (g_state == AppState::UniversalMenu || g_state == AppState::Learn || g_state == AppState::FileBrowser)
-    {
-        g_state = AppState::MainMenu;
-        g_menuIndex = 0;
-    }
-    else if (g_state == AppState::UniversalRemote)
-    {
-        cancelSendJobs(); // irTask clears the progress popup when its job stops
-        g_state = AppState::UniversalMenu;
-        g_menuIndex = 0;
-    }
-    else if (g_state == AppState::RemoteView)
-    {
-        cancelSendJobs(); // stops a running loop send and skips queued ones
-        disarmDelete();
-        g_state = AppState::FileBrowser;
-    }
-}
-
-void handlePressMainMenu()
-{
-    if (g_menuIndex == 0)
-    {
-        g_state = AppState::UniversalMenu;
-    }
-    else if (g_menuIndex == 1)
-    {
-        g_state = AppState::FileBrowser;
-        g_currentPath = "/";
-        resetFileBrowserFilter();
-        g_dirCache.valid = false;
-        loadDirectory(g_currentPath);
-    }
-    else if (g_menuIndex == 2)
-    {
-        g_state = AppState::Learn;
-    }
-    g_menuIndex = 0;
-}
-
-void handlePressUniversalMenu()
-{
-    if (g_headerModeSelected)
-    {
-        g_universalMode =
-            (g_universalMode == UniversalMode::Single) ? UniversalMode::Aggressive : UniversalMode::Single;
-        setStatus("Mode: " + getUniversalModeLabel());
-        g_headerModeSelected = false;
-        return;
-    }
-
-    static const char *const kTargets[] = {"TV", "AC", "Proj", "Audio"};
-    g_targetDevice = kTargets[constrain(g_menuIndex, 0, kUnivMenuLen - 1)];
-    g_univProfilePath = bruteProfileForTarget(g_targetDevice);
-    if (loadUniversalCommandList(g_univProfilePath))
-    {
-        setStatus("Select command"); // on failure the loader's own message stays
-    }
-
-    g_state = AppState::UniversalRemote;
-    g_menuIndex = 0;
-}
-
-void handlePressUniversalRemote()
-{
-    if (g_univCmdCount <= 0)
-    {
-        setStatus("No commands loaded");
-        return;
-    }
-    queueCommand(IrCommandType::UniversalSend, g_menuIndex);
-}
-
-void openSelectedFile()
-{
-    const char *name = dirRowName(g_menuIndex);
-    String fullPath = joinPath(g_currentPath, name);
-    if (fullPath.length() >= kMaxPathLen)
-    {
-        setStatus("Path too long");
-        return;
-    }
-
-    int count = buildCommandIndex(fullPath, g_fileIndex);
-    if (count <= 0)
-    {
-        setStatus("No commands in file");
-        return;
-    }
-
-    g_selectedFilePath = fullPath;
-    g_selectedFileName = name;
-    g_remoteCmdCount = count;
-    g_remoteCmdIndex = 1;
-    showRemoteCommand(1);
-    g_state = AppState::RemoteView;
-}
-
-void handlePressFileBrowser()
-{
-    if (g_dirViewCount == 0)
-    {
-        setStatus("Folder empty");
-        return;
-    }
-
-    if (!dirRowIsFolder(g_menuIndex))
-    {
-        openSelectedFile();
-        return;
-    }
-
-    if (dirRowIsBack(g_menuIndex))
-    {
-        g_currentPath = getParentDir(g_currentPath);
-    }
-    else
-    {
-        g_currentPath = joinPath(g_currentPath, dirRowName(g_menuIndex));
-        resetFileBrowserFilter(); // first-letter filter applies to the current level only
-    }
-    loadDirectory(g_currentPath);
-}
-
-void handlePressRemoteView(unsigned long now)
-{
-    if (g_remoteModeSelected)
-    {
-        if (g_remoteSendMode == RemoteSendMode::One)
-        {
-            g_remoteSendMode = RemoteSendMode::Loop;
-        }
-        else if (g_remoteSendMode == RemoteSendMode::Loop)
-        {
-            g_remoteSendMode = RemoteSendMode::Delete;
-        }
-        else
-        {
-            g_remoteSendMode = RemoteSendMode::One;
-        }
-        setStatus("Remote Mode: " + getRemoteSendModeLabel());
-        g_remoteModeSelected = false;
-        disarmDelete();
-        return;
-    }
-
-    // A delete renumbers the commands. Until its result arrives the index on screen may be
-    // stale, so nothing that names a command by number or offset is queued.
-    if (g_deletePending)
-    {
-        setStatus("Deleting, please wait");
-        return;
-    }
-
-    if (g_remoteSendMode == RemoteSendMode::Loop)
-    {
-        queueCommand(IrCommandType::RemoteSendAll, 0);
-    }
-    else if (g_remoteSendMode == RemoteSendMode::One)
-    {
-        queueCommand(IrCommandType::RemoteSendOne, 0);
-    }
-    else if (g_deleteArmed && now - g_deleteArmedMs <= kDeleteConfirmWindowMs)
-    {
-        disarmDelete();
-        g_deletePending = queueCommand(IrCommandType::RemoteDelete, 0);
-    }
-    else
-    {
-        g_deleteArmed = true;
-        g_deleteArmedMs = now;
-        setStatus("Press again to delete");
-    }
-}
-
-void handlePressLearn()
-{
-    LearnPhase phase = getLearnPhaseSnapshot();
-    if (phase == LearnPhase::Captured)
-    {
-        if (queueCommand(IrCommandType::LearnSave, 0))
-        {
-            setLearnPhase(LearnPhase::Saving);
-        }
-    }
-    else if (phase == LearnPhase::Error || phase == LearnPhase::Idle || phase == LearnPhase::Saved)
-    {
-        queueCommand(IrCommandType::LearnStart, 0);
-    }
-}
-
-void handlePress(unsigned long now)
-{
-    switch (g_state)
-    {
-        case AppState::MainMenu:
-            handlePressMainMenu();
-            break;
-        case AppState::UniversalMenu:
-            handlePressUniversalMenu();
-            break;
-        case AppState::UniversalRemote:
-            handlePressUniversalRemote();
-            break;
-        case AppState::FileBrowser:
-            handlePressFileBrowser();
-            break;
-        case AppState::RemoteView:
-            handlePressRemoteView(now);
-            break;
-        case AppState::Learn:
-            handlePressLearn();
-            break;
-    }
-}
-
-void handleInput(const JoyInput &in, unsigned long now)
-{
-    if (in.up || in.down)
-    {
-        handleScroll(in.up);
-    }
-    if (in.right)
-    {
-        handleRight();
-    }
-    if (in.left)
-    {
-        handleLeft();
-    }
-    if (in.press)
-    {
-        handlePress(now);
-    }
-}
-
-void onStateChanged(AppState previous, AppState next)
-{
-    if (next == AppState::Learn)
-    {
-        queueCommand(IrCommandType::LearnStart, 0);
-        setStatus("Point remote and press key");
-    }
-    if (next == AppState::UniversalMenu)
-    {
-        g_headerModeSelected = false;
-    }
-    if (next == AppState::RemoteView)
-    {
-        g_remoteModeSelected = false;
-        disarmDelete();
-    }
-    if (previous == AppState::Learn)
-    {
-        queueCommand(IrCommandType::LearnStop, 0);
+        app.onEvent(evt);
     }
 }
 
 // ---- Display power -----------------------------------------------------------------------
-void wakeDisplay(unsigned long now)
+void wakeDisplay(unsigned long now, App &app)
 {
     g_lastInputMs = now;
     if (g_displayAsleep)
@@ -461,12 +28,12 @@ void wakeDisplay(unsigned long now)
         g_display.displayOn();
         g_displayAsleep = false;
     }
-    g_uiDirty = true;
+    app.markDirty();
 }
 
-void sleepDisplayIfIdle(unsigned long now, const UiSnapshot &snap)
+void sleepDisplayIfIdle(unsigned long now, const UiSnapshot &snap, const App &app)
 {
-    bool busy = g_state == AppState::Learn || snap.univSending || snap.transmitting;
+    bool busy = app.keepsAwake(snap);
     if (!g_displayAsleep && !busy && now - g_lastInputMs >= kIdleDisplayOffMs)
     {
         g_display.displayOff();
@@ -474,53 +41,12 @@ void sleepDisplayIfIdle(unsigned long now, const UiSnapshot &snap)
     }
 }
 
-// ---- Screen model ------------------------------------------------------------------------
-// Gathers what the screens need from the UI-owned globals. The drawing itself is in ui.cpp.
-UiModel buildUiModel(const UiSnapshot &snap)
-{
-    UiModel m;
-    m.state = g_state;
-    m.menuIndex = g_menuIndex;
-
-    m.headerModeSelected = g_headerModeSelected;
-    m.universalBadge = getUniversalModeBadge();
-    m.targetDevice = g_targetDevice;
-    m.univProfilePath = g_univProfilePath;
-    m.univItems = g_univCmdItems;
-    m.univCount = g_univCmdCount;
-
-    if (g_state == AppState::FileBrowser)
-    {
-        m.browserPath = g_currentPath;
-        m.browserFilterLabel = getFileBrowserFilterLabel();
-        m.browserCount = g_dirViewCount;
-        m.browserWindowStart = listWindowStart(g_menuIndex, g_dirViewCount);
-        // Build only the rows on screen, not all 260.
-        for (int i = 0; i < kMenuVisibleRows && m.browserWindowStart + i < g_dirViewCount; i++)
-        {
-            m.browserRows[m.browserShown++] = dirRowLabel(m.browserWindowStart + i);
-        }
-    }
-
-    m.fileName = g_selectedFileName;
-    m.cmdIndex = g_remoteCmdIndex;
-    m.cmdCount = g_remoteCmdCount;
-    m.sendModeBadge = getRemoteSendModeBadge();
-    m.deleteMode = g_remoteSendMode == RemoteSendMode::Delete;
-    m.modeSelected = g_remoteModeSelected;
-    m.deleteArmed = g_deleteArmed;
-    m.deletePending = g_deletePending;
-
-    m.shared = snap;
-    return m;
-}
-
 // ---- uiTask --------------------------------------------------------------------------------
 void uiTask(void *pvParameters)
 {
     Joystick joystick; // input module: owns the pins, the debounce and the repeat timing
     joystick.begin();
-    AppState previousState = g_state;
+    App &app = g_launcher.current();
     UiSnapshot lastDrawn;
     unsigned long lastDrawMs = 0;
     g_lastInputMs = millis();
@@ -529,44 +55,35 @@ void uiTask(void *pvParameters)
     {
         unsigned long now = millis();
 
-        drainIrEvents();
+        drainIrEvents(app);
 
         JoyInput in = joystick.read(now);
         if (in.any())
         {
             bool wasAsleep = g_displayAsleep;
-            wakeDisplay(now);
+            wakeDisplay(now, app);
             if (!wasAsleep)
             {
-                handleInput(in, now); // the first touch on a dark screen only wakes it
+                app.onInput(in, now); // the first touch on a dark screen only wakes it
             }
         }
 
-        if (previousState != g_state)
-        {
-            onStateChanged(previousState, g_state);
-            previousState = g_state;
-            g_uiDirty = true;
-        }
-
-        if (g_deleteArmed && now - g_deleteArmedMs > kDeleteConfirmWindowMs)
-        {
-            disarmDelete();
-            g_uiDirty = true;
-        }
+        app.tick(now); // state transitions and timeouts inside the app
 
         UiSnapshot snap = snapshotUi();
-        sleepDisplayIfIdle(now, snap);
+        sleepDisplayIfIdle(now, snap, app);
 
         // Draw when something changed, or when kUiHeartbeatMs has passed (the footer marquee
         // needs the heartbeat). With 33 this is the original's redraw-every-frame behaviour.
-        bool due = g_uiDirty || uiSnapshotChanged(snap, lastDrawn) || now - lastDrawMs >= kUiHeartbeatMs;
+        bool due = app.isDirty() || uiSnapshotChanged(snap, lastDrawn) || now - lastDrawMs >= kUiHeartbeatMs;
         if (!g_displayAsleep && due)
         {
-            drawScreen(buildUiModel(snap));
+            UiModel model;
+            app.buildModel(model, snap);
+            drawScreen(model);
             lastDrawn = snap;
             lastDrawMs = now;
-            g_uiDirty = false;
+            app.clearDirty();
         }
 
         sdMountRetryTick(now); // only does anything while the card is not mounted
@@ -688,7 +205,7 @@ void irDeleteCommand(const IrCommand &cmd)
 void irUniversalSend(const IrCommand &cmd, IrPayload &payload)
 {
     String profilePath = cmd.path;
-    String groupName = cmd.name; // copied at press time; g_univCmdItems is UI-owned
+    String groupName = cmd.name; // copied at press time; the group list belongs to the app
     if (groupName.length() == 0)
     {
         setStatus("Invalid group");
