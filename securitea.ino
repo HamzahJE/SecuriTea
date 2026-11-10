@@ -1,8 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include "SSD1306Wire.h"
-#include <SPI.h>
-#include <SD.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -10,6 +8,7 @@
 #include "app_state.h"
 #include "ir_file.h"
 #include "ir_engine.h"
+#include "storage.h"
 #include "ui_layout.h"
 #include "ui.h"
 #include "input.h"
@@ -18,9 +17,6 @@
 // HARDWARE OBJECTS
 // ==========================================
 SSD1306Wire g_display(board::kOledAddress, SDA_OLED, SCL_OLED);
-
-// External SPI bus (FSPI): SD card today, PN532 NFC later. Pins live in board_config.h.
-SPIClass g_sdSpi(FSPI);
 
 // ==========================================
 // UI-OWNED STATE (written by uiTask only)
@@ -64,9 +60,7 @@ std::atomic<uint32_t> g_sendGeneration{0}; // bumped by cancelSendJobs(); see he
 
 QueueHandle_t g_irCommandQueue = NULL;
 QueueHandle_t g_irEventQueue = NULL;
-SemaphoreHandle_t g_stateMutex = NULL;
-SemaphoreHandle_t g_sdMutex = NULL;
-bool g_sdMounted = false; // SD.begin() has succeeded; guarded by g_sdMutex
+SemaphoreHandle_t g_stateMutex = NULL; // the SD lock lives inside storage.cpp
 TaskHandle_t g_uiTaskHandle = NULL;
 TaskHandle_t g_irTaskHandle = NULL;
 
@@ -96,11 +90,10 @@ void setup()
 
     // Sync primitives
     g_stateMutex = xSemaphoreCreateMutex();
-    g_sdMutex = xSemaphoreCreateMutex();
     g_irCommandQueue = xQueueCreate(kIrCommandQueueLen, sizeof(IrCommand));
     g_irEventQueue = xQueueCreate(kIrEventQueueLen, sizeof(IrEvent));
 
-    if (!g_stateMutex || !g_sdMutex || !g_irCommandQueue || !g_irEventQueue)
+    if (!g_stateMutex || !g_irCommandQueue || !g_irEventQueue)
     {
         Serial.println("RTOS init failed");
         while (true)
@@ -109,23 +102,25 @@ void setup()
         }
     }
 
-    // Boot SD. These five lines are the original firmware's, call for call, and must stay that
-    // way: this exact sequence is what is proven on the hardware. (The pull-up request on MISO
-    // is undone by begin(), which re-configures the pin as a plain input. That is how the
-    // original behaved too, so it is left alone.)
-    pinMode(board::kExtSpiMisoPin, INPUT_PULLUP);
-    g_sdSpi.begin(board::kExtSpiSckPin, board::kExtSpiMisoPin, board::kExtSpiMosiPin, board::kSdCsPin);
+    // Boot SD. The sequence is the original firmware's, call for call: bus up, one second,
+    // one mount. storageInitBus() and storageMount() contain exactly those calls.
+    if (!storageInitBus())
+    {
+        Serial.println("SD lock creation failed");
+        while (true)
+        {
+            delay(1000);
+        }
+    }
     delay(kSdPowerSettleMs);
-    lockSD();
-    g_sdMounted = SD.begin(board::kSdCsPin, g_sdSpi, board::kSdSpiHz);
-    unlockSD();
+    bool mounted = storageMount();
 
     // The first boot after an upload often finds the card still recovering: during the upload
     // the chip's pins float for twenty seconds or more, the card's chip select among them, and
     // a card with no pull-up on that line is clocked with noise the whole time. Pressing RST a
     // moment later always worked. So instead of giving up after one try, wait and try again,
     // a few times, with the card left alone in between. This never runs on a mounted card.
-    for (int attempt = 2; !g_sdMounted && attempt <= kSdBootMountTries; attempt++)
+    for (int attempt = 2; !mounted && attempt <= kSdBootMountTries; attempt++)
     {
         Serial.printf("SD mount failed, waiting %lu ms before try %d of %d\n", kSdBootMountRetryMs, attempt,
                       kSdBootMountTries);
@@ -134,12 +129,10 @@ void setup()
         g_display.drawString(0, 14, "try " + String(attempt) + " of " + String(kSdBootMountTries));
         g_display.display();
         delay(kSdBootMountRetryMs);
-        lockSD();
-        g_sdMounted = SD.begin(board::kSdCsPin, g_sdSpi, board::kSdSpiHz);
-        unlockSD();
+        mounted = storageMount();
     }
 
-    if (!g_sdMounted)
+    if (!mounted)
     {
         Serial.println("SD Failed");
         setStatus("SD mount failed");
