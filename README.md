@@ -41,9 +41,13 @@ All pin assignments live in `board_config.h`:
 | `app_state.h` | shared types, limits, tunables |
 | `board_config.h` | every pin and bus assignment |
 | `ir_file.h/.cpp` | Flipper `.ir` parser and validation (no globals) |
-| `storage_ir.ino` | SD card access, safe delete, IR transmit and capture |
-| `tasks.ino` | `uiTask` (screen and joystick) and `irTask` (LED, receiver) |
-| `helpers.ino` | locks, shared-state setters, queue helpers, diagnostics |
+| `storage.h/.cpp` | everything that touches the SD card: bus, lock, mount, index, safe delete |
+| `ir_engine.h/.cpp` | the IR hardware: LED driver, receiver, protocol frames |
+| `ui.h/.cpp` | the screens, drawn from a `UiModel` |
+| `input.h/.cpp` | the joystick |
+| `storage_ir.ino` | glue: turns storage and IR results into status text and the UI's view |
+| `tasks.ino` | `uiTask` (input, state, screen model) and `irTask` (send, delete, learn jobs) |
+| `helpers.ino` | shared-state setters, cancel counter, queue helpers, diagnostics |
 | `ui_layout.h/.cpp` | OLED drawing primitives |
 
 Two FreeRTOS tasks run on separate cores. The UI task owns the screen and every UI variable.
