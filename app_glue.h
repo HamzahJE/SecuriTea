@@ -16,7 +16,7 @@ LearnPhase getLearnPhaseSnapshot();
 // Cancel (helpers.ino): bumps the generation every queued send job is stamped with.
 void cancelSendJobs();
 
-// Storage glue (storage_ir.ino): storage results turned into status text.
+// Storage glue (app_glue.ino): storage results turned into status text.
 int buildCommandIndex(const String &path, CommandIndex &index);
 bool publishCommandAt(const String &path, uint32_t offset);
 
