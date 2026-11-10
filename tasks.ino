@@ -677,6 +677,7 @@ void uiTask(void *pvParameters)
             g_uiDirty = false;
         }
 
+        sdMountRetryTick(now); // only does anything while the card is not mounted
         if (kSerialDiagnostics)
         {
             logRuntimeDiagnostics();
