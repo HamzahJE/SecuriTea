@@ -73,6 +73,46 @@ bool ensureSdMountedLocked()
     return g_sdMounted;
 }
 
+// uiTask, every frame. While the card is not mounted (the boot mount failed, or the card stopped
+// answering and the one restart in openSdForRead() failed), try to mount it again every
+// kSdLateMountRetryMs without waiting for the user, and say so on the status line. Prints one
+// line per try with the time, so the serial log shows how long an episode lasts.
+// Never runs on a mounted card.
+void sdMountRetryTick(unsigned long now)
+{
+    static unsigned long lastTryMs = 0;
+    static bool wasAway = false;
+
+    lockSD();
+    bool mounted = g_sdMounted;
+    unlockSD();
+    if (mounted)
+    {
+        if (wasAway)
+        {
+            wasAway = false;
+            Serial.printf("[sd] card is back at t=%lus\n", now / 1000);
+            setStatus("SD card is back");
+        }
+        return;
+    }
+
+    wasAway = true;
+    if (now - lastTryMs < kSdLateMountRetryMs)
+    {
+        return;
+    }
+    lastTryMs = now;
+    lockSD();
+    g_sdMounted = SD.begin(board::kSdCsPin, g_sdSpi, board::kSdSpiHz);
+    unlockSD();
+    Serial.printf("[sd] mount retry at t=%lus: %s\n", now / 1000, g_sdMounted ? "ok" : "failed");
+    if (!g_sdMounted)
+    {
+        setStatus("SD card not answering, retrying");
+    }
+}
+
 // Opens a path for reading. If the open fails it is tried once more after a short pause,
 // which covers a card that was briefly busy.
 //
