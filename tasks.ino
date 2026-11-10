@@ -1,650 +1,975 @@
 // ==========================================
 // FREERTOS TASKS
 // ==========================================
-void uiTask(void *pvParameters)
+// uiTask (core 1, prio 1) owns the screen, the joystick and every UI global.
+// irTask (core 0, prio 2) owns the IR LED, the receiver and its own working payload.
+// They talk only through g_irCommandQueue (UI -> IR) and g_irEventQueue (IR -> UI).
+
+// ---- uiTask private state -------------------------------------------------------------
+bool g_uiDirty = true;             // something changed, draw on the next frame
+bool g_displayAsleep = false;
+unsigned long g_lastInputMs = 0;
+unsigned long g_lastJoyMs = 0;
+bool g_deleteArmed = false;        // first press in Delete mode arms, second press deletes
+unsigned long g_deleteArmedMs = 0;
+bool g_deletePending = false;      // a delete is queued or running; its result has not arrived
+
+// ---- Results from irTask --------------------------------------------------------------
+// Runs on uiTask. uiTask owns g_state, the directory view and the command index, so only
+// uiTask may change them in response to a delete.
+void handleDeleteResult(const IrEvent &evt)
 {
-    pinMode(JOY_BTN, INPUT_PULLUP);
-    bool lastBtnState = HIGH;
-    AppState previousState = current_state;
-
-    while (1)
+    g_deletePending = false;
+    if (!evt.success)
     {
-        int xVal = analogRead(JOY_X);
-        int yVal = analogRead(JOY_Y);
-        bool currentBtnState = digitalRead(JOY_BTN);
-        long current_time = millis();
+        setStatus(evt.text[0] ? String(evt.text) : String("Delete failed"));
+        return;
+    }
 
-        if (current_time - last_joy_time > 250)
+    g_dirCache.valid = false; // the folder listing may have changed
+    String deletedName = evt.text;
+
+    // The result is about evt.path. If the user has opened a different file since, that file's
+    // index and counters are not ours to touch: refresh the listing and stop.
+    if (g_selectedFilePath != evt.path)
+    {
+        if (g_state == AppState::FileBrowser)
         {
-            if (yVal < 1000)
-            {
-                if (current_state == MENU_UNIV_REMOTE)
-                    headerModeSelected = false;
-                if (current_state == APP_REMOTE_VIEW)
-                {
-                    remoteModeSelected = false;
-                    if (remote_cmd_index > 1)
-                    {
-                        remote_cmd_index--;
-                        loadFlipperCommandByIndex(selected_file_path, remote_cmd_index);
-                    }
-                }
-                else if (current_state == APP_FILE_BROWSER && menu_index > 0)
-                    menu_index--;
-                else if (current_state != APP_FILE_BROWSER)
-                    menu_index--;
-                last_joy_time = current_time;
-            }
-            if (yVal > 3000)
-            {
-                if (current_state == MENU_UNIV_REMOTE)
-                    headerModeSelected = false;
-                if (current_state == APP_REMOTE_VIEW)
-                {
-                    remoteModeSelected = false;
-                    if (remote_cmd_index < remote_cmd_count)
-                    {
-                        remote_cmd_index++;
-                        loadFlipperCommandByIndex(selected_file_path, remote_cmd_index);
-                    }
-                }
-                else if (current_state == APP_FILE_BROWSER && menu_index < dir_item_count - 1)
-                    menu_index++;
-                else if (current_state != APP_FILE_BROWSER)
-                    menu_index++;
-                last_joy_time = current_time;
-            }
-            if (xVal > 3000)
-            {
-                if (current_state == MENU_UNIV_REMOTE)
-                {
-                    headerModeSelected = true;
-                    last_joy_time = current_time;
-                }
-                else if (current_state == APP_FILE_BROWSER)
-                {
-                    cycleFileBrowserFilter();
-                    loadDirectory(current_path);
-                    setStatus("Filter: " + getFileBrowserFilterLabel());
-                    last_joy_time = current_time;
-                }
-                else if (current_state == APP_REMOTE_VIEW)
-                {
-                    remoteModeSelected = true;
-                    last_joy_time = current_time;
-                }
-            }
-            if (xVal < 1000)
-            {
-                if (current_state == MENU_UNIV_REMOTE && headerModeSelected)
-                {
-                    headerModeSelected = false;
-                }
-                else if (current_state == APP_REMOTE_VIEW && remoteModeSelected)
-                {
-                    remoteModeSelected = false;
-                }
-                else if (current_state == APP_FILE_BROWSER && file_filter_index != 0)
-                {
-                    resetFileBrowserFilter();
-                    loadDirectory(current_path);
-                    setStatus("Filter: ALL");
-                }
-                else if (current_state == MENU_UNIV_REMOTE || current_state == APP_LEARN || current_state == APP_FILE_BROWSER)
-                {
-                    if (current_state == APP_LEARN)
-                        queueCommand(IR_CMD_LEARN_STOP);
-                    current_state = MENU_MAIN;
-                    menu_index = 0;
-                }
-                else if (current_state == APP_UNIV_BRUTE)
-                {
-                    requestUniversalCancel(true);
-                    setUniversalProgress(false, 0, 0, "");
-                    current_state = MENU_UNIV_REMOTE;
-                    menu_index = 0;
-                }
-                else if (current_state == APP_REMOTE_VIEW)
-                {
-                    current_state = APP_FILE_BROWSER;
-                }
-                last_joy_time = current_time;
-            }
+            loadDirectory(g_currentPath);
         }
+        setStatus("Deleted " + deletedName);
+        return;
+    }
 
-        if (currentBtnState == LOW && lastBtnState == HIGH)
+    int remaining = evt.fileRemoved ? 0 : buildCommandIndex(g_selectedFilePath, g_fileIndex);
+    if (remaining <= 0)
+    {
+        g_remoteCmdCount = 0;
+        g_fileIndex.count = 0;
+        if (g_state == AppState::RemoteView)
         {
-            if (current_state == MENU_MAIN)
-            {
-                if (menu_index == 0)
-                    current_state = MENU_UNIV_REMOTE;
-                if (menu_index == 1)
-                {
-                    current_state = APP_FILE_BROWSER;
-                    current_path = "/";
-                    resetFileBrowserFilter();
-                    dir_cache_valid = false;
-                    loadDirectory(current_path);
-                }
-                if (menu_index == 2)
-                    current_state = APP_LEARN;
-                menu_index = 0;
-            }
-            else if (current_state == MENU_UNIV_REMOTE)
-            {
-                if (headerModeSelected)
-                {
-                    if (universal_mode == UNIV_MODE_SINGLE)
-                        universal_mode = UNIV_MODE_AGGRESSIVE;
-                    else
-                        universal_mode = UNIV_MODE_SINGLE;
-
-                    applyUniversalModeSettings();
-                    setStatus("Mode: " + getUniversalModeLabel());
-                    headerModeSelected = false;
-                    lastBtnState = currentBtnState;
-                    vTaskDelay(pdMS_TO_TICKS(33));
-                    continue;
-                }
-
-                if (menu_index == 0)
-                    current_target_device = "TV";
-                if (menu_index == 1)
-                    current_target_device = "AC";
-                if (menu_index == 2)
-                    current_target_device = "Proj";
-                if (menu_index == 3)
-                    current_target_device = "Audio";
-
-                univ_profile_path = bruteProfileForTarget(current_target_device);
-                loadUniversalCommandList(univ_profile_path);
-                setBruteStatus(false, 1, univ_profile_path);
-                requestUniversalCancel(false);
-                setUniversalProgress(false, 0, 0, "");
-                setStatus("Select command");
-
-                current_state = APP_UNIV_BRUTE;
-                menu_index = 0;
-            }
-            else if (current_state == APP_UNIV_BRUTE)
-            {
-                if (univ_cmd_count > 0)
-                {
-                    requestUniversalCancel(false);
-                    queueCommand(IR_CMD_UNIV_SEND, menu_index);
-                }
-                else
-                {
-                    setStatus("No commands loaded");
-                }
-            }
-            else if (current_state == APP_FILE_BROWSER)
-            {
-                if (dir_item_count == 0)
-                {
-                    setStatus("Folder empty");
-                    lastBtnState = currentBtnState;
-                    vTaskDelay(pdMS_TO_TICKS(33));
-                    continue;
-                }
-
-                if (dir_is_folder[menu_index])
-                {
-                    if (dir_items[menu_index] == ".. (Back)")
-                    {
-                        current_path = getParentDir(current_path);
-                    }
-                    else
-                    {
-                        if (current_path == "/")
-                            current_path = "/" + dir_items[menu_index];
-                        else
-                            current_path = current_path + "/" + dir_items[menu_index];
-
-                        // Apply first-letter filtering only at the current level.
-                        resetFileBrowserFilter();
-                    }
-                    loadDirectory(current_path);
-                }
-                else
-                {
-                    String full_path = "";
-                    if (current_path == "/")
-                        full_path = "/" + dir_items[menu_index];
-                    else
-                        full_path = current_path + "/" + dir_items[menu_index];
-
-                    selected_file_path = full_path;
-                    remote_cmd_count = countCommandsInFile(full_path);
-                    if (remote_cmd_count <= 0)
-                    {
-                        setStatus("No commands in file");
-                        lastBtnState = currentBtnState;
-                        vTaskDelay(pdMS_TO_TICKS(33));
-                        continue;
-                    }
-                    remote_cmd_index = 1;
-                    setSelectedFileName(dir_items[menu_index]);
-                    loadFlipperCommandByIndex(full_path, remote_cmd_index);
-                    current_state = APP_REMOTE_VIEW;
-                }
-            }
-            else if (current_state == APP_REMOTE_VIEW)
-            {
-                if (remoteModeSelected)
-                {
-                    if (remote_send_mode == REMOTE_SEND_ONE)
-                        remote_send_mode = REMOTE_SEND_LOOP;
-                    else if (remote_send_mode == REMOTE_SEND_LOOP)
-                        remote_send_mode = REMOTE_SEND_DELETE;
-                    else
-                        remote_send_mode = REMOTE_SEND_ONE;
-
-                    setStatus("Remote Mode: " + getRemoteSendModeLabel());
-                    remoteModeSelected = false;
-                }
-                else
-                {
-                    if (remote_send_mode == REMOTE_SEND_LOOP)
-                        queueCommand(IR_CMD_REMOTE_SEND_ALL);
-                    else if (remote_send_mode == REMOTE_SEND_ONE)
-                        queueCommand(IR_CMD_TRANSMIT_CURRENT);
-                    else
-                        queueCommand(IR_CMD_REMOTE_DELETE);
-                }
-            }
-            else if (current_state == APP_LEARN)
-            {
-                LearnPhase phase = getLearnPhaseSnapshot();
-                if (phase == LEARN_CAPTURED)
-                {
-                    setLearnPhase(LEARN_SAVING);
-                    queueCommand(IR_CMD_LEARN_SAVE);
-                }
-                else if (phase == LEARN_ERROR || phase == LEARN_IDLE || phase == LEARN_SAVED)
-                {
-                    queueCommand(IR_CMD_LEARN_START);
-                }
-            }
+            g_state = AppState::FileBrowser;
         }
-        lastBtnState = currentBtnState;
-
-        if (previousState != current_state)
+        if (g_state == AppState::FileBrowser)
         {
-            if (current_state == APP_LEARN)
-            {
-                queueCommand(IR_CMD_LEARN_START);
-                setStatus("Point remote and press key");
-            }
-            if (current_state == MENU_UNIV_REMOTE)
-            {
-                headerModeSelected = false;
-            }
-            if (current_state == APP_REMOTE_VIEW)
-            {
-                remoteModeSelected = false;
-            }
-            if (previousState == APP_LEARN && current_state != APP_LEARN)
-            {
-                queueCommand(IR_CMD_LEARN_STOP);
-            }
-            previousState = current_state;
+            loadDirectory(g_currentPath);
         }
+        setStatus("Deleted " + deletedName + (evt.fileRemoved ? " (file empty)" : ""));
+        return;
+    }
 
-        if (current_state == MENU_MAIN)
-        {
-            if (menu_index < 0)
-                menu_index = main_menu_len - 1;
-            if (menu_index >= main_menu_len)
-                menu_index = 0;
-            drawMenu("SecuriTea OS", main_menu, main_menu_len, menu_index);
-        }
-        else if (current_state == MENU_UNIV_REMOTE)
-        {
-            if (menu_index < 0)
-                menu_index = univ_menu_len - 1;
-            if (menu_index >= univ_menu_len)
-                menu_index = 0;
-            String local_univ_menu[MAX_UNIV_ITEMS];
-            for (int i = 0; i < univ_menu_len; i++)
-                local_univ_menu[i] = univ_menu[i];
-            drawMenu("Universal Remote", local_univ_menu, univ_menu_len, menu_index, "[v^]Scroll [>]Mode [BTN]Toggle/Pick [<]Back", getUniversalModeBadge(), true, headerModeSelected);
-        }
-        else if (current_state == APP_FILE_BROWSER)
-        {
-            for (int i = 0; i < dir_item_count; i++)
-            {
-                if (dir_is_folder[i] && dir_items[i] != ".. (Back)")
-                    display_items_buffer[i] = "[DIR] " + dir_items[i];
-                else
-                    display_items_buffer[i] = dir_items[i];
-            }
-            if (dir_item_count == 0)
-            {
-                display.clear();
-                drawHeader("Path: " + current_path, getFileBrowserFilterLabel());
-                display.drawString(0, UI_LINE_1_Y + 4, "(No items)");
-                drawFooter("[>]Filter [<]Clr/Back");
-                display.display();
-            }
-            else
-            {
-                drawMenu("Path: " + current_path, display_items_buffer, dir_item_count, menu_index, "[>]Filter [BTN]Open [<]Clr/Back", getFileBrowserFilterLabel());
-            }
-        }
-        else if (current_state == APP_UNIV_BRUTE)
-        {
-            if (univ_cmd_count > 0)
-            {
-                if (menu_index < 0)
-                    menu_index = univ_cmd_count - 1;
-                if (menu_index >= univ_cmd_count)
-                    menu_index = 0;
-            }
-            else
-            {
-                menu_index = 0;
-            }
-            UiSnapshot snap = snapshotUi();
+    g_remoteCmdCount = remaining;
+    if (g_remoteCmdIndex > g_remoteCmdCount)
+    {
+        g_remoteCmdIndex = g_remoteCmdCount;
+    }
+    if (g_remoteCmdIndex < 1)
+    {
+        g_remoteCmdIndex = 1;
+    }
+    showRemoteCommand(g_remoteCmdIndex);
+    setStatus("Deleted " + deletedName);
+}
 
-            if (univ_cmd_count <= 0)
-            {
-                display.clear();
-                drawHeader(current_target_device + " Remote", getUniversalModeBadge());
-                display.drawString(0, UI_LINE_1_Y + 4, "No commands found");
-                display.drawString(0, UI_LINE_2_Y + 4, "File: " + univ_profile_path);
-                drawFooter("[<] Back");
-                display.display();
-            }
-            else
-            {
-                drawMenu(current_target_device + " Remote", univ_cmd_items, univ_cmd_count, menu_index, "[<] Back | [BTN] Select", getUniversalModeBadge(), false);
-                if (snap.univSending)
-                    drawUniversalProgressPopup(snap.univProgressName, snap.univProgressCurrent, snap.univProgressTotal);
-                display.display();
-            }
-        }
-        else if (current_state == APP_REMOTE_VIEW)
+void drainIrEvents()
+{
+    IrEvent evt;
+    while (g_irEventQueue && xQueueReceive(g_irEventQueue, &evt, 0) == pdTRUE)
+    {
+        if (evt.type == IrEventType::DeleteResult)
         {
-            UiSnapshot snap = snapshotUi();
-            display.clear();
-            drawHeader("<- Back   Blaster", getRemoteSendModeBadge(), remoteModeSelected);
-            display.drawString(0, UI_LINE_1_Y, "File: " + snap.selectedFile);
-            display.drawString(0, UI_LINE_2_Y, "Btn: " + snap.btnName);
-            display.drawString(0, UI_LINE_3_Y, "Cmd: " + String(remote_cmd_index) + "/" + String(remote_cmd_count));
-
-            if (snap.transmitting)
-                drawFooter("[ TRANSMITTING... ]");
-            else if (remote_send_mode == REMOTE_SEND_DELETE)
-                drawFooter("[v^]Cmd [>]Mode [BTN]Delete");
-            else
-                drawFooter("[v^]Cmd [>]Mode [BTN]Send");
-            display.display();
+            handleDeleteResult(evt);
         }
-        else if (current_state == APP_LEARN)
-        {
-            UiSnapshot snap = snapshotUi();
-            display.clear();
-            drawHeader("Learn New Remote");
-            display.drawString(0, UI_LINE_1_Y, snap.status);
-
-            if (snap.learnPhase == LEARN_LISTENING)
-            {
-                display.drawString(0, UI_LINE_2_Y, "Waiting for signal...");
-                drawFooter("[<] Back");
-            }
-            else if (snap.learnPhase == LEARN_CAPTURED)
-            {
-                String proto = snap.learnProtocol.length() ? snap.learnProtocol : "UNKNOWN";
-                display.drawString(0, UI_LINE_2_Y, trimToWidth("Proto: " + proto, 21));
-                if (snap.learnDetail.length())
-                    display.drawString(0, UI_LINE_3_Y, trimToWidth(snap.learnDetail, 21));
-                drawFooter("[BTN] Save | [<] Back");
-            }
-            else if (snap.learnPhase == LEARN_SAVED)
-            {
-                display.drawString(0, UI_LINE_2_Y, "Saved to /captures/");
-                if (snap.learnProtocol.length())
-                    display.drawString(0, UI_LINE_3_Y, trimToWidth("Proto: " + snap.learnProtocol, 21));
-                drawFooter("[BTN] Capture Again");
-            }
-            else if (snap.learnPhase == LEARN_ERROR)
-            {
-                display.drawString(0, UI_LINE_2_Y, "Capture error");
-                drawFooter("[BTN] Retry | [<] Back");
-            }
-            else
-            {
-                display.drawString(0, UI_LINE_2_Y, "Preparing listener...");
-                drawFooter("[<] Back");
-            }
-            display.display();
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(33));
+        g_uiDirty = true;
     }
 }
 
+// ---- Input -----------------------------------------------------------------------------
+JoyInput readJoystick(unsigned long now, bool &lastBtnState)
+{
+    JoyInput in;
+    int x = analogRead(board::kJoyXPin);
+    int y = analogRead(board::kJoyYPin);
+    bool btn = digitalRead(board::kJoyButtonPin);
+
+    if (now - g_lastJoyMs > kJoyRepeatMs)
+    {
+        in.up = y < kJoyLowThreshold;
+        in.down = y > kJoyHighThreshold;
+        in.right = x > kJoyHighThreshold;
+        in.left = x < kJoyLowThreshold;
+        if (in.up || in.down || in.left || in.right)
+        {
+            g_lastJoyMs = now;
+        }
+    }
+
+    in.press = (btn == LOW && lastBtnState == HIGH);
+    lastBtnState = btn;
+    return in;
+}
+
+int menuLengthForState()
+{
+    switch (g_state)
+    {
+        case AppState::MainMenu:
+            return kMainMenuLen;
+        case AppState::UniversalMenu:
+            return kUnivMenuLen;
+        case AppState::UniversalRemote:
+            return g_univCmdCount;
+        case AppState::FileBrowser:
+            return g_dirViewCount;
+        default:
+            return 0;
+    }
+}
+
+void disarmDelete()
+{
+    g_deleteArmed = false;
+}
+
+void showRemoteCommand(int index)
+{
+    if (index < 1 || index > g_fileIndex.count)
+    {
+        return;
+    }
+    g_remoteCmdIndex = index;
+    publishCommandAt(g_selectedFilePath, g_fileIndex.offsets[index - 1]);
+}
+
+void handleScroll(bool up)
+{
+    int step = up ? -1 : 1;
+
+    if (g_state == AppState::UniversalMenu)
+    {
+        g_headerModeSelected = false;
+    }
+
+    if (g_state == AppState::RemoteView)
+    {
+        g_remoteModeSelected = false;
+        disarmDelete();
+        if (g_deletePending)
+        {
+            return; // the command numbers are about to change; wait for the result
+        }
+        int next = g_remoteCmdIndex + step;
+        if (next >= 1 && next <= g_remoteCmdCount)
+        {
+            showRemoteCommand(next);
+        }
+        return;
+    }
+
+    int len = menuLengthForState();
+    if (len <= 0)
+    {
+        g_menuIndex = 0;
+        return;
+    }
+    if (g_state == AppState::FileBrowser)
+    {
+        g_menuIndex = constrain(g_menuIndex + step, 0, len - 1); // lists do not wrap
+    }
+    else
+    {
+        g_menuIndex = (g_menuIndex + step + len) % len; // menus wrap
+    }
+}
+
+void handleRight()
+{
+    if (g_state == AppState::UniversalMenu)
+    {
+        g_headerModeSelected = true;
+    }
+    else if (g_state == AppState::FileBrowser)
+    {
+        cycleFileBrowserFilter();
+        loadDirectory(g_currentPath);
+        setStatus("Filter: " + getFileBrowserFilterLabel());
+    }
+    else if (g_state == AppState::RemoteView)
+    {
+        g_remoteModeSelected = true;
+        disarmDelete();
+    }
+}
+
+void handleLeft()
+{
+    if (g_state == AppState::UniversalMenu && g_headerModeSelected)
+    {
+        g_headerModeSelected = false;
+    }
+    else if (g_state == AppState::RemoteView && g_remoteModeSelected)
+    {
+        g_remoteModeSelected = false;
+    }
+    else if (g_state == AppState::FileBrowser && g_fileFilterIndex != 0)
+    {
+        resetFileBrowserFilter();
+        loadDirectory(g_currentPath);
+        setStatus("Filter: ALL");
+    }
+    else if (g_state == AppState::UniversalMenu || g_state == AppState::Learn || g_state == AppState::FileBrowser)
+    {
+        g_state = AppState::MainMenu;
+        g_menuIndex = 0;
+    }
+    else if (g_state == AppState::UniversalRemote)
+    {
+        cancelSendJobs(); // irTask clears the progress popup when its job stops
+        g_state = AppState::UniversalMenu;
+        g_menuIndex = 0;
+    }
+    else if (g_state == AppState::RemoteView)
+    {
+        cancelSendJobs(); // stops a running loop send and skips queued ones
+        disarmDelete();
+        g_state = AppState::FileBrowser;
+    }
+}
+
+void handlePressMainMenu()
+{
+    if (g_menuIndex == 0)
+    {
+        g_state = AppState::UniversalMenu;
+    }
+    else if (g_menuIndex == 1)
+    {
+        g_state = AppState::FileBrowser;
+        g_currentPath = "/";
+        resetFileBrowserFilter();
+        g_dirCache.valid = false;
+        loadDirectory(g_currentPath);
+    }
+    else if (g_menuIndex == 2)
+    {
+        g_state = AppState::Learn;
+    }
+    g_menuIndex = 0;
+}
+
+void handlePressUniversalMenu()
+{
+    if (g_headerModeSelected)
+    {
+        g_universalMode =
+            (g_universalMode == UniversalMode::Single) ? UniversalMode::Aggressive : UniversalMode::Single;
+        setStatus("Mode: " + getUniversalModeLabel());
+        g_headerModeSelected = false;
+        return;
+    }
+
+    static const char *const kTargets[] = {"TV", "AC", "Proj", "Audio"};
+    g_targetDevice = kTargets[constrain(g_menuIndex, 0, kUnivMenuLen - 1)];
+    g_univProfilePath = bruteProfileForTarget(g_targetDevice);
+    if (loadUniversalCommandList(g_univProfilePath))
+    {
+        setStatus("Select command"); // on failure the loader's own message stays
+    }
+
+    g_state = AppState::UniversalRemote;
+    g_menuIndex = 0;
+}
+
+void handlePressUniversalRemote()
+{
+    if (g_univCmdCount <= 0)
+    {
+        setStatus("No commands loaded");
+        return;
+    }
+    queueCommand(IrCommandType::UniversalSend, g_menuIndex);
+}
+
+void openSelectedFile()
+{
+    const char *name = dirRowName(g_menuIndex);
+    String fullPath = joinPath(g_currentPath, name);
+    if (fullPath.length() >= kMaxPathLen)
+    {
+        setStatus("Path too long");
+        return;
+    }
+
+    int count = buildCommandIndex(fullPath, g_fileIndex);
+    if (count <= 0)
+    {
+        setStatus("No commands in file");
+        return;
+    }
+
+    g_selectedFilePath = fullPath;
+    g_selectedFileName = name;
+    g_remoteCmdCount = count;
+    g_remoteCmdIndex = 1;
+    showRemoteCommand(1);
+    g_state = AppState::RemoteView;
+}
+
+void handlePressFileBrowser()
+{
+    if (g_dirViewCount == 0)
+    {
+        setStatus("Folder empty");
+        return;
+    }
+
+    if (!dirRowIsFolder(g_menuIndex))
+    {
+        openSelectedFile();
+        return;
+    }
+
+    if (dirRowIsBack(g_menuIndex))
+    {
+        g_currentPath = getParentDir(g_currentPath);
+    }
+    else
+    {
+        g_currentPath = joinPath(g_currentPath, dirRowName(g_menuIndex));
+        resetFileBrowserFilter(); // first-letter filter applies to the current level only
+    }
+    loadDirectory(g_currentPath);
+}
+
+void handlePressRemoteView(unsigned long now)
+{
+    if (g_remoteModeSelected)
+    {
+        if (g_remoteSendMode == RemoteSendMode::One)
+        {
+            g_remoteSendMode = RemoteSendMode::Loop;
+        }
+        else if (g_remoteSendMode == RemoteSendMode::Loop)
+        {
+            g_remoteSendMode = RemoteSendMode::Delete;
+        }
+        else
+        {
+            g_remoteSendMode = RemoteSendMode::One;
+        }
+        setStatus("Remote Mode: " + getRemoteSendModeLabel());
+        g_remoteModeSelected = false;
+        disarmDelete();
+        return;
+    }
+
+    // A delete renumbers the commands. Until its result arrives the index on screen may be
+    // stale, so nothing that names a command by number or offset is queued.
+    if (g_deletePending)
+    {
+        setStatus("Deleting, please wait");
+        return;
+    }
+
+    if (g_remoteSendMode == RemoteSendMode::Loop)
+    {
+        queueCommand(IrCommandType::RemoteSendAll, 0);
+    }
+    else if (g_remoteSendMode == RemoteSendMode::One)
+    {
+        queueCommand(IrCommandType::RemoteSendOne, 0);
+    }
+    else if (g_deleteArmed && now - g_deleteArmedMs <= kDeleteConfirmWindowMs)
+    {
+        disarmDelete();
+        g_deletePending = queueCommand(IrCommandType::RemoteDelete, 0);
+    }
+    else
+    {
+        g_deleteArmed = true;
+        g_deleteArmedMs = now;
+        setStatus("Press again to delete");
+    }
+}
+
+void handlePressLearn()
+{
+    LearnPhase phase = getLearnPhaseSnapshot();
+    if (phase == LearnPhase::Captured)
+    {
+        if (queueCommand(IrCommandType::LearnSave, 0))
+        {
+            setLearnPhase(LearnPhase::Saving);
+        }
+    }
+    else if (phase == LearnPhase::Error || phase == LearnPhase::Idle || phase == LearnPhase::Saved)
+    {
+        queueCommand(IrCommandType::LearnStart, 0);
+    }
+}
+
+void handlePress(unsigned long now)
+{
+    switch (g_state)
+    {
+        case AppState::MainMenu:
+            handlePressMainMenu();
+            break;
+        case AppState::UniversalMenu:
+            handlePressUniversalMenu();
+            break;
+        case AppState::UniversalRemote:
+            handlePressUniversalRemote();
+            break;
+        case AppState::FileBrowser:
+            handlePressFileBrowser();
+            break;
+        case AppState::RemoteView:
+            handlePressRemoteView(now);
+            break;
+        case AppState::Learn:
+            handlePressLearn();
+            break;
+    }
+}
+
+void handleInput(const JoyInput &in, unsigned long now)
+{
+    if (in.up || in.down)
+    {
+        handleScroll(in.up);
+    }
+    if (in.right)
+    {
+        handleRight();
+    }
+    if (in.left)
+    {
+        handleLeft();
+    }
+    if (in.press)
+    {
+        handlePress(now);
+    }
+}
+
+void onStateChanged(AppState previous, AppState next)
+{
+    if (next == AppState::Learn)
+    {
+        queueCommand(IrCommandType::LearnStart, 0);
+        setStatus("Point remote and press key");
+    }
+    if (next == AppState::UniversalMenu)
+    {
+        g_headerModeSelected = false;
+    }
+    if (next == AppState::RemoteView)
+    {
+        g_remoteModeSelected = false;
+        disarmDelete();
+    }
+    if (previous == AppState::Learn)
+    {
+        queueCommand(IrCommandType::LearnStop, 0);
+    }
+}
+
+// ---- Display power -----------------------------------------------------------------------
+void wakeDisplay(unsigned long now)
+{
+    g_lastInputMs = now;
+    if (g_displayAsleep)
+    {
+        g_display.displayOn();
+        g_displayAsleep = false;
+    }
+    g_uiDirty = true;
+}
+
+void sleepDisplayIfIdle(unsigned long now, const UiSnapshot &snap)
+{
+    bool busy = g_state == AppState::Learn || snap.univSending || snap.transmitting;
+    if (!g_displayAsleep && !busy && now - g_lastInputMs >= kIdleDisplayOffMs)
+    {
+        g_display.displayOff();
+        g_displayAsleep = true;
+    }
+}
+
+// ---- Screens ----------------------------------------------------------------------------
+void drawFileBrowserScreen()
+{
+    String title = "Path: " + g_currentPath;
+    if (g_dirViewCount == 0)
+    {
+        g_display.clear();
+        drawHeader(title, getFileBrowserFilterLabel());
+        g_display.drawString(0, kUiLine1Y + 4, "(No items)");
+        drawFooter("[>]Filter [<]Clr/Back");
+        g_display.display();
+        return;
+    }
+
+    // Build only the rows on screen, not all 260.
+    int start = listWindowStart(g_menuIndex, g_dirViewCount);
+    String rows[kMenuVisibleRows];
+    int shown = 0;
+    for (int i = 0; i < kMenuVisibleRows && start + i < g_dirViewCount; i++)
+    {
+        rows[shown++] = dirRowLabel(start + i);
+    }
+    drawMenu(title, rows, shown, g_menuIndex - start, "[>]Filter [BTN]Open [<]Clr/Back",
+             getFileBrowserFilterLabel());
+}
+
+void drawUniversalRemoteScreen(const UiSnapshot &snap)
+{
+    String title = g_targetDevice + " Remote";
+    if (g_univCmdCount <= 0)
+    {
+        g_display.clear();
+        drawHeader(title, getUniversalModeBadge());
+        g_display.drawString(0, kUiLine1Y + 4, "No commands found");
+        g_display.drawString(0, kUiLine2Y + 4, "File: " + g_univProfilePath);
+        drawFooter("[<] Back");
+        g_display.display();
+        return;
+    }
+
+    drawMenu(title, g_univCmdItems, g_univCmdCount, g_menuIndex, "[<] Back | [BTN] Select",
+             getUniversalModeBadge(), false);
+    if (snap.univSending)
+    {
+        drawUniversalProgressPopup(snap.univProgressName, snap.univProgressCurrent, snap.univProgressTotal);
+    }
+    g_display.display();
+}
+
+void drawRemoteViewScreen(const UiSnapshot &snap)
+{
+    g_display.clear();
+    drawHeader("<- Back   Blaster", getRemoteSendModeBadge(), g_remoteModeSelected);
+    g_display.drawString(0, kUiLine1Y, "File: " + g_selectedFileName);
+    // While a send is running, show the name going out (irTask's field). Otherwise show the
+    // selected command (uiTask's field). The two never overwrite each other.
+    bool sending = snap.transmitting && snap.sendingName.length() > 0;
+    g_display.drawString(0, kUiLine2Y, sending ? "Tx: " + snap.sendingName : "Btn: " + snap.btnName);
+    g_display.drawString(0, kUiLine3Y, "Cmd: " + String(g_remoteCmdIndex) + "/" + String(g_remoteCmdCount));
+
+    if (g_deletePending)
+    {
+        drawFooter("[ DELETING... ]");
+    }
+    else if (snap.transmitting)
+    {
+        drawFooter("[ TRANSMITTING... ]");
+    }
+    else if (g_remoteSendMode == RemoteSendMode::Delete)
+    {
+        drawFooter(g_deleteArmed ? "[BTN] Confirm delete" : "[v^]Cmd [>]Mode [BTN]Delete");
+    }
+    else
+    {
+        drawFooter("[v^]Cmd [>]Mode [BTN]Send");
+    }
+    g_display.display();
+}
+
+void drawLearnScreen(const UiSnapshot &snap)
+{
+    g_display.clear();
+    drawHeader("Learn New Remote");
+    g_display.drawString(0, kUiLine1Y, snap.status);
+
+    switch (snap.learnPhase)
+    {
+        case LearnPhase::Listening:
+            g_display.drawString(0, kUiLine2Y, "Waiting for signal...");
+            drawFooter("[<] Back");
+            break;
+        case LearnPhase::Captured:
+        {
+            String proto = snap.learnProtocol.length() ? snap.learnProtocol : "UNKNOWN";
+            g_display.drawString(0, kUiLine2Y, trimToWidth("Proto: " + proto, 21));
+            if (snap.learnDetail.length())
+            {
+                g_display.drawString(0, kUiLine3Y, trimToWidth(snap.learnDetail, 21));
+            }
+            drawFooter("[BTN] Save | [<] Back");
+            break;
+        }
+        case LearnPhase::Saved:
+            g_display.drawString(0, kUiLine2Y, "Saved to /captures/");
+            if (snap.learnProtocol.length())
+            {
+                g_display.drawString(0, kUiLine3Y, trimToWidth("Proto: " + snap.learnProtocol, 21));
+            }
+            drawFooter("[BTN] Capture Again");
+            break;
+        case LearnPhase::Error:
+            g_display.drawString(0, kUiLine2Y, "Capture error");
+            drawFooter("[BTN] Retry | [<] Back");
+            break;
+        default:
+            g_display.drawString(0, kUiLine2Y, "Preparing listener...");
+            drawFooter("[<] Back");
+            break;
+    }
+    g_display.display();
+}
+
+void drawScreen(const UiSnapshot &snap)
+{
+    switch (g_state)
+    {
+        case AppState::MainMenu:
+            drawMenu("SecuriTea OS", kMainMenu, kMainMenuLen, g_menuIndex);
+            break;
+        case AppState::UniversalMenu:
+            drawMenu("Universal Remote", kUnivMenu, kUnivMenuLen, g_menuIndex,
+                     "[v^]Scroll [>]Mode [BTN]Toggle/Pick [<]Back", getUniversalModeBadge(), true,
+                     g_headerModeSelected);
+            break;
+        case AppState::FileBrowser:
+            drawFileBrowserScreen();
+            break;
+        case AppState::UniversalRemote:
+            drawUniversalRemoteScreen(snap);
+            break;
+        case AppState::RemoteView:
+            drawRemoteViewScreen(snap);
+            break;
+        case AppState::Learn:
+            drawLearnScreen(snap);
+            break;
+    }
+}
+
+// ---- uiTask --------------------------------------------------------------------------------
+void uiTask(void *pvParameters)
+{
+    pinMode(board::kJoyButtonPin, INPUT_PULLUP);
+    bool lastBtnState = HIGH;
+    AppState previousState = g_state;
+    UiSnapshot lastDrawn;
+    unsigned long lastDrawMs = 0;
+    g_lastInputMs = millis();
+
+    while (true)
+    {
+        unsigned long now = millis();
+
+        drainIrEvents();
+
+        JoyInput in = readJoystick(now, lastBtnState);
+        if (in.any())
+        {
+            bool wasAsleep = g_displayAsleep;
+            wakeDisplay(now);
+            if (!wasAsleep)
+            {
+                handleInput(in, now); // the first touch on a dark screen only wakes it
+            }
+        }
+
+        if (previousState != g_state)
+        {
+            onStateChanged(previousState, g_state);
+            previousState = g_state;
+            g_uiDirty = true;
+        }
+
+        if (g_deleteArmed && now - g_deleteArmedMs > kDeleteConfirmWindowMs)
+        {
+            disarmDelete();
+            g_uiDirty = true;
+        }
+
+        UiSnapshot snap = snapshotUi();
+        sleepDisplayIfIdle(now, snap);
+
+        // Draw when something changed, or when kUiHeartbeatMs has passed. The heartbeat is set
+        // to one frame for now, so the screen is redrawn every loop exactly as the original
+        // firmware did. Raise kUiHeartbeatMs only after a board test confirms nothing else changes.
+        bool due = g_uiDirty || uiSnapshotChanged(snap, lastDrawn) || now - lastDrawMs >= kUiHeartbeatMs;
+        if (!g_displayAsleep && due)
+        {
+            drawScreen(snap);
+            lastDrawn = snap;
+            lastDrawMs = now;
+            g_uiDirty = false;
+        }
+
+        if (kSerialDiagnostics)
+        {
+            logRuntimeDiagnostics();
+        }
+        vTaskDelay(pdMS_TO_TICKS(kUiFrameMs));
+    }
+}
+
+// ---- irTask jobs ---------------------------------------------------------------------------
+// Sends a loaded payload cmd.timing.transmitRepeats times. Stops between repeats if the job was
+// cancelled. Returns true if at least one send went out.
+bool transmitRepeated(const IrPayload &payload, const IrCommand &cmd)
+{
+    const IrTiming &t = cmd.timing;
+    bool sentOnce = false;
+    for (uint8_t rep = 0; rep < t.transmitRepeats; rep++)
+    {
+        if (isJobCancelled(cmd))
+        {
+            break;
+        }
+        if (transmitPayload(payload, t))
+        {
+            sentOnce = true;
+        }
+        if (rep + 1 < t.transmitRepeats)
+        {
+            vTaskDelay(pdMS_TO_TICKS(t.repeatGapMs));
+        }
+    }
+    return sentOnce;
+}
+
+// One mode. The command carries the file and the byte offset the user had selected when they
+// pressed, so irTask loads and sends exactly that command whatever the screen shows by now.
+void irSendOne(const IrCommand &cmd, IrPayload &payload)
+{
+    if (cmd.path[0] == '\0' || cmd.commandCount <= 0)
+    {
+        setStatus("No command selected");
+        return;
+    }
+    if (!loadFlipperCommandAt(cmd.path, cmd.offset, payload))
+    {
+        return; // the loader already put the reason on the status line
+    }
+    transmitPayload(payload, cmd.timing);
+}
+
+void irSendAll(const IrCommand &cmd, IrPayload &payload)
+{
+    String path = cmd.path;
+    if (path.length() == 0 || cmd.commandCount <= 0)
+    {
+        setStatus("No file commands");
+        return;
+    }
+
+    int count = buildCommandIndex(path, g_irIndex);
+    if (count <= 0)
+    {
+        setStatus("No file commands");
+        return;
+    }
+
+    int sentCount = 0;
+    bool cancelled = false;
+    for (int i = 0; i < count; i++)
+    {
+        if (isJobCancelled(cmd))
+        {
+            cancelled = true;
+            break;
+        }
+        if (!loadFlipperCommandAt(path, g_irIndex.offsets[i], payload))
+        {
+            vTaskDelay(1); // a file of bad commands must still let the idle task run
+            continue;
+        }
+        if (transmitRepeated(payload, cmd))
+        {
+            sentCount++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(cmd.timing.sendDelayMs));
+    }
+
+    setStatus(cancelled ? "Canceled loop" : "Loop Done " + String(sentCount) + "/" + String(count));
+}
+
+void irDeleteCommand(const IrCommand &cmd)
+{
+    String path = cmd.path; // captured when the button was pressed
+    IrEvent evt;
+    evt.type = IrEventType::DeleteResult;
+    evt.success = false;
+    evt.fileRemoved = false;
+    evt.text[0] = '\0';
+    strlcpy(evt.path, cmd.path, sizeof(evt.path));
+
+    if (path.length() == 0 || cmd.commandIndex <= 0)
+    {
+        strlcpy(evt.text, "No command selected", sizeof(evt.text));
+        queueIrEvent(evt);
+        return;
+    }
+
+    String deletedName;
+    bool fileRemoved = false;
+    const char *reason = nullptr;
+    evt.success = deleteFlipperCommandByIndex(path, cmd.commandIndex, deletedName, fileRemoved, reason);
+    evt.fileRemoved = fileRemoved;
+    strlcpy(evt.text, evt.success ? deletedName.c_str() : (reason ? reason : "Delete failed"), sizeof(evt.text));
+    queueIrEvent(evt); // uiTask decides the screen, the list and the index
+}
+
+void irUniversalSend(const IrCommand &cmd, IrPayload &payload)
+{
+    String profilePath = cmd.path;
+    String groupName = cmd.name; // copied at press time; g_univCmdItems is UI-owned
+    if (groupName.length() == 0)
+    {
+        setStatus("Invalid group");
+        return;
+    }
+
+    // g_irIndex is irTask's own index. A group such as "Power" can have hundreds of entries.
+    int matchCount = buildGroupIndex(profilePath, groupName, g_irIndex);
+    if (matchCount <= 0)
+    {
+        setStatus("No cmds for " + groupName);
+        setUniversalProgress(false, 0, 0, "");
+        return;
+    }
+
+    int sentCount = 0;
+    setUniversalProgress(true, 0, matchCount, groupName);
+    for (int i = 0; i < matchCount; i++)
+    {
+        if (isJobCancelled(cmd))
+        {
+            break;
+        }
+
+        bool loaded = false;
+        for (uint8_t attempt = 0; attempt < cmd.timing.loadRetries && !loaded; attempt++)
+        {
+            loaded = loadFlipperCommandAt(profilePath, g_irIndex.offsets[i], payload);
+            if (!loaded)
+            {
+                vTaskDelay(pdMS_TO_TICKS(15));
+            }
+        }
+        if (!loaded)
+        {
+            continue;
+        }
+
+        setUniversalProgress(true, i + 1, matchCount, groupName);
+        if (transmitRepeated(payload, cmd))
+        {
+            sentCount++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(cmd.timing.sendDelayMs));
+    }
+
+    // irTask is the only writer of the progress fields. Jobs run one after another, so this
+    // clear always lands before the next job sets its own progress.
+    setUniversalProgress(false, 0, 0, "");
+    if (isJobCancelled(cmd))
+    {
+        setStatus("Canceled " + groupName);
+    }
+    else
+    {
+        setStatus("Done " + groupName + " " + String(sentCount) + "/" + String(matchCount));
+    }
+}
+
+bool isSendJob(IrCommandType type)
+{
+    return type == IrCommandType::RemoteSendOne || type == IrCommandType::RemoteSendAll ||
+           type == IrCommandType::UniversalSend;
+}
+
+void handleIrCommand(const IrCommand &cmd, IrPayload &payload, LearnSession &learn)
+{
+    if (isSendJob(cmd.type) && isJobCancelled(cmd))
+    {
+        return; // queued before the user backed out: they no longer want it
+    }
+
+    switch (cmd.type)
+    {
+        case IrCommandType::RemoteSendOne:
+            irSendOne(cmd, payload);
+            break;
+        case IrCommandType::RemoteSendAll:
+            irSendAll(cmd, payload);
+            break;
+        case IrCommandType::RemoteDelete:
+            irDeleteCommand(cmd);
+            break;
+        case IrCommandType::UniversalSend:
+            irUniversalSend(cmd, payload);
+            break;
+        case IrCommandType::LearnStart:
+            // enableIRIn() allocates a hardware timer every time it is called and the chip has
+            // four. Call it once per listening session; "capture again" only re-arms.
+            if (!learn.listening)
+            {
+                g_irrecv.enableIRIn();
+                learn.listening = true;
+            }
+            else
+            {
+                g_irrecv.resume();
+            }
+            learn.captured = false;
+            setLearnPhase(LearnPhase::Listening);
+            setLearnDetails("", "");
+            setStatus("Listening...");
+            break;
+        case IrCommandType::LearnStop:
+            // disableIRIn() frees that timer; calling it twice would free it twice.
+            if (learn.listening)
+            {
+                g_irrecv.disableIRIn();
+                learn.listening = false;
+            }
+            learn.captured = false;
+            setLearnPhase(LearnPhase::Idle);
+            setLearnDetails("", "");
+            break;
+        case IrCommandType::LearnSave:
+            if (learn.captured)
+            {
+                saveLearnedCommandToSD(learn.signal);
+            }
+            else
+            {
+                setStatus("Nothing to save");
+                setLearnPhase(LearnPhase::Error);
+            }
+            break;
+    }
+}
+
+// ---- irTask ----------------------------------------------------------------------------------
 void irTask(void *pvParameters)
 {
-    bool learnListening = false;
+    LearnSession learn; // receiver state and the frozen capture; never shared with the UI
+    IrPayload payload;  // working copy for send jobs; never shared with the UI
 
-    while (1)
+    while (true)
     {
+        // Wake every kIrPollMs whether or not a command arrived: the original firmware's
+        // rhythm, and what the receiver needs while learning. Waiting forever when idle is a
+        // later efficiency step, to be made on its own and board-tested.
+        TickType_t wait = pdMS_TO_TICKS(kIrPollMs);
         IrCommand cmd;
-        while (xQueueReceive(irCommandQueue, &cmd, 0) == pdTRUE)
+        if (xQueueReceive(g_irCommandQueue, &cmd, wait) == pdTRUE)
         {
-            if (cmd.type == IR_CMD_TRANSMIT_CURRENT)
-            {
-                transmitCurrentPayload();
-            }
-            else if (cmd.type == IR_CMD_REMOTE_SEND_ALL)
-            {
-                String path = selected_file_path;
-                if (path.length() == 0 || remote_cmd_count <= 0)
-                {
-                    setStatus("No file commands");
-                }
-                else
-                {
-                    int sentCount = 0;
-                    for (int i = 1; i <= remote_cmd_count; i++)
-                    {
-                        bool loaded = loadFlipperCommandByIndex(path, i);
-                        if (!loaded)
-                            continue;
-
-                        bool sentOk = false;
-                        for (uint8_t rep = 0; rep < currentTransmitRepeats; rep++)
-                        {
-                            if (transmitCurrentPayload())
-                                sentOk = true;
-
-                            if (rep + 1 < currentTransmitRepeats)
-                                vTaskDelay(pdMS_TO_TICKS(currentRepeatGapMs));
-                        }
-
-                        if (sentOk)
-                            sentCount++;
-
-                        vTaskDelay(pdMS_TO_TICKS(currentSendDelayMs));
-                    }
-                    setStatus("Loop Done " + String(sentCount) + "/" + String(remote_cmd_count));
-                }
-            }
-            else if (cmd.type == IR_CMD_REMOTE_DELETE)
-            {
-                String path = selected_file_path;
-                int deleteIndex = remote_cmd_index;
-
-                if (path.length() == 0 || deleteIndex <= 0)
-                {
-                    setStatus("No command selected");
-                }
-                else
-                {
-                    String deletedName = "";
-                    bool fileRemoved = false;
-                    bool deleted = deleteFlipperCommandByIndex(path, deleteIndex, deletedName, fileRemoved);
-
-                    if (!deleted)
-                    {
-                        setStatus("Delete failed");
-                    }
-                    else
-                    {
-                        dir_cache_valid = false;
-                        if (fileRemoved)
-                        {
-                            remote_cmd_count = 0;
-                            current_state = APP_FILE_BROWSER;
-                            loadDirectory(current_path);
-                            setStatus("Deleted " + deletedName + " (file empty)");
-                        }
-                        else
-                        {
-                            remote_cmd_count = countCommandsInFile(path);
-                            if (remote_cmd_count <= 0)
-                            {
-                                current_state = APP_FILE_BROWSER;
-                                loadDirectory(current_path);
-                                setStatus("Deleted " + deletedName);
-                            }
-                            else
-                            {
-                                if (remote_cmd_index > remote_cmd_count)
-                                    remote_cmd_index = remote_cmd_count;
-
-                                if (loadFlipperCommandByIndex(path, remote_cmd_index))
-                                    setStatus("Deleted " + deletedName);
-                                else
-                                    setStatus("Deleted; reload failed");
-                            }
-                        }
-                    }
-                }
-            }
-            else if (cmd.type == IR_CMD_UNIV_SEND)
-            {
-                String profilePath = getUniversalProfilePathSnapshot();
-                int groupIdx = cmd.arg;
-
-                if (groupIdx < 0 || groupIdx >= univ_cmd_count)
-                {
-                    setStatus("Invalid group");
-                    continue;
-                }
-
-                String groupName = univ_cmd_items[groupIdx];
-                lockSD();
-                bool exists = SD.exists(profilePath.c_str());
-                unlockSD();
-
-                if (!exists)
-                {
-                    setStatus("Missing " + profilePath);
-                }
-                else
-                {
-                    int matchIndices[MAX_UNIV_ITEMS];
-                    int matchCount = getUniversalGroupCommandIndices(profilePath, groupName, matchIndices, MAX_UNIV_ITEMS);
-
-                    if (matchCount <= 0)
-                    {
-                        setStatus("No cmds for " + groupName);
-                        setUniversalProgress(false, 0, 0, "");
-                    }
-                    else
-                    {
-                        int sentCount = 0;
-                        int failCount = 0;
-                        setUniversalProgress(true, 0, matchCount, groupName);
-                        for (int i = 0; i < matchCount; i++)
-                        {
-                            if (isUniversalCancelRequested())
-                            {
-                                setStatus("Canceled " + groupName);
-                                break;
-                            }
-
-                            int commandIndex = matchIndices[i];
-                            bool loaded = false;
-                            for (uint8_t attempt = 0; attempt < currentLoadRetries; attempt++)
-                            {
-                                if (loadFlipperCommandByIndex(profilePath, commandIndex))
-                                {
-                                    loaded = true;
-                                    break;
-                                }
-                                vTaskDelay(pdMS_TO_TICKS(15));
-                            }
-
-                            if (!loaded)
-                            {
-                                failCount++;
-                                continue;
-                            }
-
-                            setUniversalProgress(true, i + 1, matchCount, groupName);
-                            setBruteStatus(false, commandIndex, profilePath);
-
-                            bool sentAtLeastOnce = false;
-                            for (uint8_t rep = 0; rep < currentTransmitRepeats; rep++)
-                            {
-                                if (isUniversalCancelRequested())
-                                {
-                                    setStatus("Canceled " + groupName);
-                                    break;
-                                }
-
-                                bool sentOk = transmitCurrentPayload();
-                                if (sentOk)
-                                    sentAtLeastOnce = true;
-
-                                if (rep + 1 < currentTransmitRepeats)
-                                    vTaskDelay(pdMS_TO_TICKS(currentRepeatGapMs));
-                            }
-
-                            if (sentAtLeastOnce)
-                                sentCount++;
-                            else
-                                failCount++;
-
-                            vTaskDelay(pdMS_TO_TICKS(currentSendDelayMs));
-                        }
-                        setUniversalProgress(false, 0, 0, "");
-                        if (!isUniversalCancelRequested())
-                            setStatus("Done " + groupName + " " + String(sentCount) + "/" + String(matchCount));
-                        requestUniversalCancel(false);
-                    }
-                }
-            }
-            else if (cmd.type == IR_CMD_LEARN_START)
-            {
-                irrecv.enableIRIn();
-                learnListening = true;
-                setLearnPhase(LEARN_LISTENING);
-                setLearnDetails("", "");
-                setStatus("Listening...");
-            }
-            else if (cmd.type == IR_CMD_LEARN_STOP)
-            {
-                learnListening = false;
-                irrecv.disableIRIn();
-                setLearnPhase(LEARN_IDLE);
-                setLearnDetails("", "");
-            }
-            else if (cmd.type == IR_CMD_LEARN_SAVE)
-            {
-                saveLearnedCommandToSD();
-            }
+            handleIrCommand(cmd, payload, learn);
         }
-
-        if (learnListening)
+        // Once a signal is captured it is frozen until the user asks to capture again, so a
+        // held key or a stray remote cannot replace what the screen is describing.
+        if (learn.listening && !learn.captured)
         {
-            captureLearnSignal();
+            learn.captured = captureLearnSignal(learn.signal);
         }
-
-        vTaskDelay(pdMS_TO_TICKS(15));
     }
 }

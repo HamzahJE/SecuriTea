@@ -1,258 +1,397 @@
 // ==========================================
 // SD CARD + IR ENGINES
 // ==========================================
+// Rule for every function here: no setStatus() while g_sdMutex is held. Collect the result,
+// release the SD lock, then talk to the UI. Taking g_stateMutex inside g_sdMutex would nest
+// locks, and the architecture forbids that.
+
+// irTask runs at priority 2 on core 0, above the IDLE task that feeds the watchdog. yield()
+// does not let IDLE run; vTaskDelay(1) does. Called once per line of a long scan.
+void scanBreather(int &lineCounter)
+{
+    if (++lineCounter % kScanBreatherLines == 0)
+    {
+        vTaskDelay(1);
+    }
+}
+
+// ---- Directory cache -----------------------------------------------------------------
+bool addDirEntry(const char *name, bool isFolder)
+{
+    size_t len = strlen(name) + 1;
+    if (g_dirCache.count >= kMaxDirItems || g_dirCache.poolUsed + (int)len > kDirNamePoolBytes)
+    {
+        return false;
+    }
+    memcpy(g_dirCache.pool + g_dirCache.poolUsed, name, len);
+    g_dirCache.nameOffset[g_dirCache.count] = (uint16_t)g_dirCache.poolUsed;
+    g_dirCache.isFolder[g_dirCache.count] = isFolder;
+    g_dirCache.poolUsed += (int)len;
+    g_dirCache.count++;
+    return true;
+}
+
+bool keepInBrowser(const char *name, bool isFolder)
+{
+    if (name[0] == '.' || startsWith(name, "System") || strcmp(name, "univ_tv.ir") == 0)
+    {
+        return false;
+    }
+    return isFolder || endsWithIgnoreCase(name, ".ir");
+}
+
+// ---- Card access -----------------------------------------------------------------------
+// The card is treated exactly the way the original firmware treated it, because that is the
+// behaviour proven on this hardware: it is mounted once in setup(), and after that it is only
+// touched when the user asks for a file. Nothing in this firmware probes, resets or remounts
+// a card that is mounted.
+//
+// History, so nobody adds it back: in November 2026 this file grew a periodic sector read,
+// a "card lost" detector, SD.end()/SD.begin() remount ladders and raw reset commands. With
+// them the card dropped out within seconds of every boot. The original firmware, which has
+// none of that, ran on the same card and wiring without a single drop.
+
+// If the boot mount failed (for example no card in the slot), try again when a file is next
+// needed, at most once every kSdLateMountRetryMs. Never runs on a mounted card.
+// Caller holds the SD lock.
+bool ensureSdMountedLocked()
+{
+    static unsigned long lastTryMs = 0;
+    static bool tried = false;
+    if (g_sdMounted)
+    {
+        return true;
+    }
+    unsigned long now = millis();
+    if (tried && now - lastTryMs < kSdLateMountRetryMs)
+    {
+        return false;
+    }
+    tried = true;
+    lastTryMs = now;
+    g_sdMounted = SD.begin(board::kSdCsPin, g_sdSpi, board::kSdSpiHz);
+    return g_sdMounted;
+}
+
+// Opens a path for reading. If the open fails it is tried once more after a short pause,
+// which covers a card that was briefly busy. There is deliberately no reset and no remount:
+// a failed open is reported to the caller, and the next thing the user does simply tries
+// again. Caller holds the SD lock.
+File openSdForRead(const String &path)
+{
+    if (!ensureSdMountedLocked())
+    {
+        return File();
+    }
+    File file = SD.open(path);
+    if (!file)
+    {
+        delay(kSdOpenRetryDelayMs);
+        file = SD.open(path);
+    }
+    return file;
+}
+
 void rebuildDirectoryCache(const String &path)
 {
-    dir_cache_count = 0;
-    dir_cache_path = path;
-    dir_cache_valid = false;
+    g_dirCache.count = 0;
+    g_dirCache.poolUsed = 0;
+    g_dirCache.valid = false;
+    strlcpy(g_dirCache.path, path.c_str(), sizeof(g_dirCache.path));
 
     lockSD();
-    File dir = SD.open(path);
-
+    File dir = openSdForRead(path);
+    recoverInterruptedDeleteLocked(); // once per boot; a restored file then shows in this listing
     if (!dir || !dir.isDirectory())
     {
         if (dir)
+        {
             dir.close();
+        }
         unlockSD();
         return;
     }
 
+    // Same calls, in the same order, as the original firmware's directory scan.
+    int lines = 0;
     File file = dir.openNextFile();
-    while (file && dir_cache_count < MAX_DIR_CACHE)
+    while (file)
     {
-        String fname = getBaseName(String(file.name()));
-        String lowerFname = fname;
-        lowerFname.toLowerCase();
+        const char *name = baseName(file.name());
         bool isFolder = file.isDirectory();
-        bool isIrFile = lowerFname.endsWith(".ir");
-
-        // Keep only folders and .ir files in the browse cache.
-        if (!fname.startsWith("._") && !fname.startsWith("System") && fname != "univ_tv.ir" && (isFolder || isIrFile))
+        if (keepInBrowser(name, isFolder) && !addDirEntry(name, isFolder))
         {
-            dir_cache_items[dir_cache_count] = fname;
-            dir_cache_is_folder[dir_cache_count] = isFolder;
-            dir_cache_count++;
+            file.close();
+            break; // cache full; the rest of the folder is not shown
         }
-
         file.close();
-        yield();
+        scanBreather(lines);
         file = dir.openNextFile();
     }
 
-    if (file)
-        file.close();
     dir.close();
     unlockSD();
-
-    dir_cache_valid = true;
+    g_dirCache.valid = true;
 }
 
-void loadDirectory(String path)
+// Builds the filtered view (g_dirView) from the cache, rebuilding the cache if needed.
+void loadDirectory(const String &path)
 {
-    dir_item_count = 0;
+    g_dirViewCount = 0;
 
-    if (!dir_cache_valid || dir_cache_path != path)
+    if (!g_dirCache.valid || path != g_dirCache.path)
+    {
         rebuildDirectoryCache(path);
-
-    if (!dir_cache_valid)
+    }
+    if (!g_dirCache.valid)
+    {
         return;
+    }
 
     if (path != "/")
     {
-        dir_items[dir_item_count] = ".. (Back)";
-        dir_is_folder[dir_item_count] = true;
-        dir_item_count++;
+        g_dirView[g_dirViewCount++] = kDirViewBack;
     }
-
-    for (int i = 0; i < dir_cache_count && dir_item_count < MAX_DIR_ITEMS; i++)
+    for (int i = 0; i < g_dirCache.count && g_dirViewCount < kMaxDirItems; i++)
     {
-        if (matchesFileBrowserFilter(dir_cache_items[i]))
+        if (matchesFileBrowserFilter(g_dirCache.pool + g_dirCache.nameOffset[i]))
         {
-            dir_items[dir_item_count] = dir_cache_items[i];
-            dir_is_folder[dir_item_count] = dir_cache_is_folder[i];
-            dir_item_count++;
+            g_dirView[g_dirViewCount++] = (uint16_t)i;
         }
     }
-
-    menu_index = 0;
+    g_menuIndex = 0;
 }
 
-bool loadFlipperCommandByIndex(String filepath, int target_index)
+bool dirRowIsBack(int row)
 {
+    return g_dirView[row] == kDirViewBack;
+}
+
+bool dirRowIsFolder(int row)
+{
+    return dirRowIsBack(row) || g_dirCache.isFolder[g_dirView[row]];
+}
+
+const char *dirRowName(int row)
+{
+    if (dirRowIsBack(row))
+    {
+        return ".. (Back)";
+    }
+    return g_dirCache.pool + g_dirCache.nameOffset[g_dirView[row]];
+}
+
+String dirRowLabel(int row)
+{
+    if (!dirRowIsBack(row) && dirRowIsFolder(row))
+    {
+        return "[DIR] " + String(dirRowName(row));
+    }
+    return String(dirRowName(row));
+}
+
+// ---- Command index and loading -------------------------------------------------------
+// One scan per file open. After this every command is one seek away.
+int buildCommandIndex(const String &path, CommandIndex &index)
+{
+    index.count = 0;
+
     lockSD();
-    File file = SD.open(filepath);
+    File file = openSdForRead(path);
     if (!file)
     {
         unlockSD();
         setStatus("File Missing");
-        return false;
-    }
-
-    int command_count = 0;
-    bool target_found = false;
-    bool is_raw = false;
-    bool is_parsed = false;
-    uint16_t tempRaw[MAX_RAW_BUFFER];
-    uint16_t tempRawLen = 0;
-    uint16_t tempFrequency = 38;
-    String tempBtnName = "None";
-    String tempProtocol = "";
-    uint32_t tempAddress = 0;
-    uint32_t tempCommand = 0;
-
-    while (file.available())
-    {
-        String line = file.readStringUntil('\n');
-        line.trim();
-        if (line.length() == 0)
-            continue;
-
-        if (line.startsWith("name: "))
-        {
-            command_count++;
-            if (command_count == target_index)
-            {
-                target_found = true;
-                is_raw = false;
-                is_parsed = false;
-                tempRawLen = 0;
-                tempFrequency = 38;
-                tempBtnName = line.substring(6);
-                tempProtocol = "";
-                tempAddress = 0;
-                tempCommand = 0;
-            }
-            else
-            {
-                target_found = false;
-            }
-        }
-        else if (target_found && line.startsWith("type: raw"))
-        {
-            is_raw = true;
-            is_parsed = false;
-        }
-        else if (target_found && line.startsWith("type: parsed"))
-        {
-            is_parsed = true;
-            is_raw = false;
-        }
-        else if (target_found && is_parsed && line.startsWith("protocol: "))
-        {
-            tempProtocol = line.substring(10);
-            tempProtocol.trim();
-        }
-        else if (target_found && is_parsed && line.startsWith("address: "))
-        {
-            tempAddress = parseFlipperHex32(line.substring(9));
-        }
-        else if (target_found && is_parsed && line.startsWith("command: "))
-        {
-            tempCommand = parseFlipperHex32(line.substring(9));
-            file.close();
-            unlockSD();
-            setParsedPayload(tempProtocol, tempAddress, tempCommand, tempBtnName);
-            setStatus("Loaded: " + tempBtnName + " (parsed)");
-            return true;
-        }
-        else if (target_found && is_raw && line.startsWith("frequency: "))
-        {
-            long parsed = line.substring(11).toInt();
-            if (parsed >= 1000)
-                tempFrequency = (uint16_t)(parsed / 1000);
-            else if (parsed > 0)
-                tempFrequency = (uint16_t)parsed;
-        }
-        else if (target_found && is_raw && line.startsWith("data: "))
-        {
-            String dataStr = line.substring(6);
-            int startIdx = 0;
-            int spaceIdx = dataStr.indexOf(' ');
-
-            while (spaceIdx != -1)
-            {
-                if (tempRawLen < MAX_RAW_BUFFER)
-                {
-                    long value = dataStr.substring(startIdx, spaceIdx).toInt();
-                    if (value > 0)
-                        tempRaw[tempRawLen++] = (uint16_t)value;
-                }
-                startIdx = spaceIdx + 1;
-                spaceIdx = dataStr.indexOf(' ', startIdx);
-                yield();
-            }
-            if (startIdx < dataStr.length() && tempRawLen < MAX_RAW_BUFFER)
-            {
-                long value = dataStr.substring(startIdx).toInt();
-                if (value > 0)
-                    tempRaw[tempRawLen++] = (uint16_t)value;
-            }
-
-            if (tempRawLen == 0)
-            {
-                file.close();
-                unlockSD();
-                setStatus("Empty raw data");
-                return false;
-            }
-
-            file.close();
-            unlockSD();
-            setPayload(tempRaw, tempRawLen, tempFrequency, tempBtnName);
-            setStatus("Loaded: " + tempBtnName);
-            return true;
-        }
-    }
-    file.close();
-    unlockSD();
-    if (target_index == 1)
-        setStatus("No IR commands in file");
-    return false;
-}
-
-int countCommandsInFile(const String &path)
-{
-    lockSD();
-    File file = SD.open(path);
-    if (!file)
-    {
-        unlockSD();
         return 0;
     }
 
-    int count = 0;
-    while (file.available())
+    char line[kMaxLineLen];
+    bool truncated = false;
+    bool capped = false;
+    int lines = 0;
+    while (true)
     {
-        String line = file.readStringUntil('\n');
-        line.trim();
-        if (line.startsWith("name: "))
-            count++;
-        yield();
+        uint32_t lineStart = file.position();
+        if (!readLineBounded(file, line, sizeof(line), truncated))
+        {
+            break;
+        }
+        if (truncated)
+        {
+            skipRestOfLine(file);
+        }
+        if (startsWith(line, "name:"))
+        {
+            if (index.count >= kMaxCommandsPerFile)
+            {
+                capped = true;
+                break;
+            }
+            index.offsets[index.count++] = lineStart;
+        }
+        scanBreather(lines);
     }
-
     file.close();
     unlockSD();
-    return count;
+
+    if (capped)
+    {
+        setStatus("Capped at " + String(kMaxCommandsPerFile) + " cmds");
+    }
+    return index.count;
 }
 
-bool deleteFlipperCommandByIndex(const String &path, int target_index, String &deletedName, bool &fileRemoved)
+// Reads the command that starts at byte `offset` into `out`. Returns nullptr on success or a
+// short reason. Touches the SD card and the status line only; the caller decides what to do
+// with the loaded signal.
+const char *loadFlipperCommandReason(const String &path, uint32_t offset, IrPayload &out)
 {
-    deletedName = "";
-    fileRemoved = false;
-
-    if (target_index <= 0)
-        return false;
-
-    String tmpPath = path + ".tmp";
-    String backupPath = path + ".bak";
+    const char *err = nullptr;
 
     lockSD();
+    File file = openSdForRead(path);
+    if (!file)
+    {
+        unlockSD();
+        setStatus("File Missing");
+        return "File missing";
+    }
+    bool ok = file.seek(offset) && parseCommandAt(file, out, err);
+    file.close();
+    unlockSD();
+
+    if (!ok)
+    {
+        const char *reason = err ? err : "Seek failed";
+        setStatus(reason);
+        return reason;
+    }
+    setStatus("Loaded: " + out.btnName + (out.isParsed ? " (parsed)" : ""));
+    return nullptr;
+}
+
+bool loadFlipperCommandAt(const String &path, uint32_t offset, IrPayload &out)
+{
+    return loadFlipperCommandReason(path, offset, out) == nullptr;
+}
+
+// uiTask only: what the UI calls when you scroll or open a file. Loading the whole command
+// validates it, so a bad command shows its reason now and not when you press Send. Only the
+// name is kept for the screen; irTask loads its own copy when it sends.
+bool publishCommandAt(const String &path, uint32_t offset)
+{
+    IrPayload payload;
+    const char *reason = loadFlipperCommandReason(path, offset, payload);
+    if (reason)
+    {
+        // The remote view has no status line. Put the reason where the name goes, so the
+        // screen never keeps showing the previous command's name for one that failed to load.
+        setButtonName(String("! ") + reason);
+        return false;
+    }
+    setButtonName(payload.btnName);
+    return true;
+}
+
+// ---- Safe delete -----------------------------------------------------------------------
+// Rewrite to .tmp, verify its size, then journal the path and rename in two steps:
+//   path -> path.bak, path.tmp -> path, remove path.bak.
+// recoverInterruptedDeleteLocked() reads the journal once per boot and finishes or undoes a rename
+// sequence that power loss cut short. All of this runs with g_sdMutex held.
+bool writeDeleteJournal(const String &path)
+{
+    SD.remove(kDeleteJournalPath);
+    File journal = SD.open(kDeleteJournalPath, FILE_WRITE);
+    if (!journal)
+    {
+        return false;
+    }
+    size_t expected = path.length() + 1;
+    size_t written = journal.print(path) + journal.print('\n');
+    journal.close();
+
+    File check = SD.open(kDeleteJournalPath);
+    bool ok = check && written == expected && check.size() == expected;
+    if (check)
+    {
+        check.close();
+    }
+    return ok;
+}
+
+void clearDeleteJournal()
+{
+    SD.remove(kDeleteJournalPath);
+}
+
+// Finishes or undoes a delete that power loss cut short. Runs once per boot, the first time the
+// user opens a folder or deletes a command, and not in setup(): the boot sequence stays exactly
+// the original firmware's. Caller holds the SD lock. No delete can be in flight then (a delete
+// holds the lock from start to end), so a journal found here is always stale.
+void recoverInterruptedDeleteLocked()
+{
+    static bool done = false;
+    if (done || !g_sdMounted)
+    {
+        return;
+    }
+    done = true;
+
+    if (!SD.exists(kDeleteJournalPath))
+    {
+        return;
+    }
+
+    char pathBuf[kMaxPathLen] = "";
+    File journal = SD.open(kDeleteJournalPath);
+    bool truncated = false;
+    bool havePath = journal && readLineBounded(journal, pathBuf, sizeof(pathBuf), truncated) && !truncated;
+    if (journal)
+    {
+        journal.close();
+    }
+
+    bool resolved = true;
+    if (havePath && pathBuf[0] == '/')
+    {
+        String path = pathBuf;
+        String tmpPath = path + ".tmp";
+        String backupPath = path + ".bak";
+        bool haveOriginal = SD.exists(path);
+        bool haveBackup = SD.exists(backupPath);
+
+        if (!haveOriginal && haveBackup)
+        {
+            // Cut between the two renames: put the original back.
+            resolved = SD.rename(backupPath.c_str(), path.c_str());
+            Serial.printf("[recover] restore %s from .bak: %s\n", path.c_str(), resolved ? "ok" : "FAILED");
+        }
+        else if (haveOriginal && haveBackup)
+        {
+            // Cut after the new file was renamed into place: the delete completed.
+            SD.remove(backupPath.c_str());
+            Serial.printf("[recover] removed stale %s\n", backupPath.c_str());
+        }
+        SD.remove(tmpPath.c_str());
+    }
+
+    // Keep the journal if the original could not be restored, so the next mount tries again.
+    if (resolved)
+    {
+        clearDeleteJournal();
+    }
+}
+
+// Copies every command except target_index (1-based) to path.tmp. Returns the number of
+// commands kept, or -1 on error with `reason` set. Caller holds g_sdMutex.
+int rewriteWithoutCommand(const String &path, const String &tmpPath, int targetIndex, String &deletedName,
+                          const char *&reason)
+{
     File source = SD.open(path);
     if (!source)
     {
-        unlockSD();
-        return false;
+        reason = "File missing";
+        return -1;
     }
 
     SD.remove(tmpPath.c_str());
@@ -260,91 +399,170 @@ bool deleteFlipperCommandByIndex(const String &path, int target_index, String &d
     if (!temp)
     {
         source.close();
-        unlockSD();
-        return false;
+        reason = "Cannot write .tmp";
+        return -1;
     }
 
+    char line[kMaxLineLen];
+    bool truncated = false;
     int commandIndex = 0;
-    int keptCommands = 0;
-    bool skippingTarget = false;
+    int kept = 0;
+    bool skipping = false;
     bool found = false;
+    bool writeOk = true;
+    size_t bytesWritten = 0;
+    int lines = 0;
 
-    while (source.available())
+    while (writeOk && readLineBounded(source, line, sizeof(line), truncated))
     {
-        String line = source.readStringUntil('\n');
-        String trimmed = line;
-        trimmed.trim();
-
-        if (trimmed.startsWith("name: "))
+        if (startsWith(line, "name:"))
         {
             commandIndex++;
-            bool isTarget = (commandIndex == target_index);
-            skippingTarget = isTarget;
-
-            if (isTarget)
+            skipping = (commandIndex == targetIndex);
+            if (skipping)
             {
-                deletedName = trimmed.substring(6);
-                deletedName.trim();
                 found = true;
-                continue;
+                deletedName = skipSpaces(line + 5);
             }
-
-            keptCommands++;
+            else
+            {
+                kept++;
+            }
         }
 
-        if (!skippingTarget)
-            temp.println(line);
-
-        yield();
+        if (skipping)
+        {
+            if (truncated)
+            {
+                skipRestOfLine(source);
+            }
+        }
+        else
+        {
+            writeOk = copyLine(source, temp, line, truncated, bytesWritten);
+        }
+        scanBreather(lines);
     }
 
+    // read() returns -1 both at end of file and on a card error. Only "position reached size"
+    // proves the whole source was copied; without this a read error mid-file would produce a
+    // short .tmp that then replaces the original and silently loses every later command.
+    bool readAll = source.position() == source.size();
     source.close();
+    temp.flush();
     temp.close();
 
+    File check = SD.open(tmpPath);
+    bool sizeOk = check && check.size() == bytesWritten;
+    if (check)
+    {
+        check.close();
+    }
+
+    if (!writeOk || !sizeOk)
+    {
+        SD.remove(tmpPath.c_str());
+        reason = "Write failed, file untouched";
+        return -1;
+    }
+    if (!readAll) // checked second: a failed write also stops the loop before the end
+    {
+        SD.remove(tmpPath.c_str());
+        reason = "Read failed, file untouched";
+        return -1;
+    }
     if (!found)
     {
         SD.remove(tmpPath.c_str());
-        unlockSD();
-        return false;
+        reason = "Command not found";
+        return -1;
     }
-
-    if (keptCommands <= 0)
-    {
-        SD.remove(path.c_str());
-        SD.remove(tmpPath.c_str());
-        fileRemoved = true;
-        unlockSD();
-        return true;
-    }
-
-    SD.remove(backupPath.c_str());
-    bool movedOriginal = SD.rename(path.c_str(), backupPath.c_str());
-    if (!movedOriginal)
-    {
-        SD.remove(tmpPath.c_str());
-        unlockSD();
-        return false;
-    }
-
-    bool movedTemp = SD.rename(tmpPath.c_str(), path.c_str());
-    if (!movedTemp)
-    {
-        SD.rename(backupPath.c_str(), path.c_str());
-        unlockSD();
-        return false;
-    }
-
-    SD.remove(backupPath.c_str());
-    unlockSD();
-    return true;
+    return kept;
 }
 
-bool loadUniversalCommandList(const String &path)
+bool deleteFlipperCommandByIndex(const String &path, int targetIndex, String &deletedName, bool &fileRemoved,
+                                 const char *&reason)
 {
-    univ_cmd_count = 0;
+    deletedName = "";
+    fileRemoved = false;
+    reason = nullptr;
+
+    if (targetIndex <= 0)
+    {
+        reason = "No command selected";
+        return false;
+    }
+
+    String tmpPath = path + ".tmp";
+    String backupPath = path + ".bak";
 
     lockSD();
-    File file = SD.open(path);
+    recoverInterruptedDeleteLocked(); // once per boot, before a new journal replaces an old one
+    int kept = rewriteWithoutCommand(path, tmpPath, targetIndex, deletedName, reason);
+    if (kept < 0)
+    {
+        unlockSD();
+        return false;
+    }
+
+    if (!writeDeleteJournal(path))
+    {
+        SD.remove(tmpPath.c_str());
+        clearDeleteJournal();
+        unlockSD();
+        reason = "Journal write failed";
+        return false;
+    }
+
+    bool ok = false;
+    bool keepJournal = false;
+    if (kept == 0)
+    {
+        ok = SD.remove(path.c_str());
+        SD.remove(tmpPath.c_str());
+        fileRemoved = ok;
+        if (!ok)
+        {
+            reason = "Remove failed";
+        }
+    }
+    else
+    {
+        SD.remove(backupPath.c_str());
+        if (!SD.rename(path.c_str(), backupPath.c_str()))
+        {
+            SD.remove(tmpPath.c_str());
+            reason = "Rename failed, file untouched";
+        }
+        else if (!SD.rename(tmpPath.c_str(), path.c_str()))
+        {
+            bool restored = SD.rename(backupPath.c_str(), path.c_str());
+            SD.remove(tmpPath.c_str());
+            reason = restored ? "Rename failed, restored" : "RESTORE FAILED: see .bak";
+            keepJournal = !restored; // the next mount will try the restore again from .bak
+        }
+        else
+        {
+            SD.remove(backupPath.c_str());
+            ok = true;
+        }
+    }
+
+    if (!keepJournal)
+    {
+        clearDeleteJournal();
+    }
+    unlockSD();
+    return ok;
+}
+
+// ---- Universal profiles ----------------------------------------------------------------
+bool loadUniversalCommandList(const String &path)
+{
+    g_univCmdCount = 0;
+
+    lockSD();
+    File file = openSdForRead(path);
     if (!file)
     {
         unlockSD();
@@ -352,82 +570,88 @@ bool loadUniversalCommandList(const String &path)
         return false;
     }
 
-    while (file.available() && univ_cmd_count < MAX_UNIV_ITEMS)
+    char line[kMaxLineLen];
+    bool truncated = false;
+    int lines = 0;
+    while (g_univCmdCount < kMaxUnivItems && readLineBounded(file, line, sizeof(line), truncated))
     {
-        String line = file.readStringUntil('\n');
-        line.trim();
-        if (line.startsWith("name: "))
+        if (truncated)
         {
-            String groupName = line.substring(6);
-            groupName.trim();
-
+            skipRestOfLine(file);
+        }
+        if (startsWith(line, "name:"))
+        {
+            String groupName = skipSpaces(line + 5);
             bool alreadyExists = false;
-            for (int i = 0; i < univ_cmd_count; i++)
+            for (int i = 0; i < g_univCmdCount; i++)
             {
-                if (univ_cmd_items[i].equalsIgnoreCase(groupName))
+                if (g_univCmdItems[i].equalsIgnoreCase(groupName))
                 {
                     alreadyExists = true;
                     break;
                 }
             }
-
             if (!alreadyExists)
             {
-                univ_cmd_items[univ_cmd_count] = groupName;
-                univ_cmd_count++;
+                g_univCmdItems[g_univCmdCount++] = groupName;
             }
         }
-        yield();
+        scanBreather(lines);
     }
 
     file.close();
     unlockSD();
 
-    if (univ_cmd_count == 0)
+    if (g_univCmdCount == 0)
     {
         setStatus("No commands in profile");
         return false;
     }
-
     return true;
 }
 
-int getUniversalGroupCommandIndices(const String &path, const String &groupName, int *indices, int maxIndices)
+// Byte offset of every command in the profile whose name matches groupName (case-insensitive).
+// A universal profile can hold hundreds of entries per group, so this fills a CommandIndex
+// (1000 slots) and not a small array. Returns the number of matches.
+int buildGroupIndex(const String &path, const String &groupName, CommandIndex &index)
 {
+    index.count = 0;
+
     lockSD();
-    File file = SD.open(path);
+    File file = openSdForRead(path);
     if (!file)
     {
         unlockSD();
         return 0;
     }
 
-    int commandIndex = 0;
-    int matched = 0;
-
-    while (file.available())
+    char line[kMaxLineLen];
+    bool truncated = false;
+    int lines = 0;
+    while (index.count < kMaxCommandsPerFile)
     {
-        String line = file.readStringUntil('\n');
-        line.trim();
-
-        if (line.startsWith("name: "))
+        uint32_t lineStart = file.position();
+        if (!readLineBounded(file, line, sizeof(line), truncated))
         {
-            commandIndex++;
-            String thisName = line.substring(6);
-            thisName.trim();
-            if (thisName.equalsIgnoreCase(groupName) && matched < maxIndices)
-            {
-                indices[matched++] = commandIndex;
-            }
+            break;
         }
-        yield();
+        if (truncated)
+        {
+            skipRestOfLine(file);
+        }
+        if (startsWith(line, "name:") && groupName.equalsIgnoreCase(skipSpaces(line + 5)))
+        {
+            index.offsets[index.count++] = lineStart;
+        }
+        scanBreather(lines);
     }
 
     file.close();
     unlockSD();
-    return matched;
+    return index.count;
 }
 
+// ---- Learn mode ------------------------------------------------------------------------
 int getNextLearnedIndex(const String &path)
 {
     lockSD();
@@ -440,17 +664,29 @@ int getNextLearnedIndex(const String &path)
         return 1;
     }
 
-    while (file.available())
+    char line[kMaxLineLen];
+    bool truncated = false;
+    int lines = 0;
+    while (readLineBounded(file, line, sizeof(line), truncated))
     {
-        String line = file.readStringUntil('\n');
-        line.trim();
-        if (line.startsWith("name: Learned_"))
+        if (truncated)
         {
-            int value = line.substring(14).toInt();
-            if (value > maxIndex)
-                maxIndex = value;
+            skipRestOfLine(file);
         }
-        yield();
+        if (startsWith(line, "name:"))
+        {
+            const char *name = skipSpaces(line + 5);
+            if (startsWith(name, "Learned_"))
+            {
+                unsigned long parsed = strtoul(name + 8, nullptr, 10);
+                int value = parsed > 99999 ? 99999 : (int)parsed;
+                if (value > maxIndex)
+                {
+                    maxIndex = value;
+                }
+            }
+        }
+        scanBreather(lines);
     }
 
     file.close();
@@ -458,23 +694,20 @@ int getNextLearnedIndex(const String &path)
     return maxIndex + 1;
 }
 
-bool saveLearnedCommandToSD()
+// irTask only. Saves the capture irTask is holding, which is the one the screen described.
+bool saveLearnedCommandToSD(const IrPayload &p)
 {
-    uint16_t rawLocal[MAX_RAW_BUFFER];
-    uint16_t lenLocal = 0;
-    uint16_t freqLocal = 38;
-    String btnNameLocal = "Learned";
-
-    if (!copyPayload(rawLocal, lenLocal, freqLocal, btnNameLocal) || lenLocal == 0)
+    if (p.isParsed || p.rawLen == 0)
     {
         setStatus("Nothing to save");
+        setLearnPhase(LearnPhase::Error);
         return false;
     }
 
     lockSD();
-    SD.mkdir("/captures");
+    SD.mkdir(kLearnedDir);
     unlockSD();
-    String path = "/captures/learned.ir";
+    String path = kLearnedFilePath;
     int nextIdx = getNextLearnedIndex(path);
 
     char nameBuf[20];
@@ -486,207 +719,231 @@ bool saveLearnedCommandToSD()
     {
         unlockSD();
         setStatus("Save failed");
+        setLearnPhase(LearnPhase::Error);
         return false;
     }
 
-    file.print("name: ");
-    file.println(nameBuf);
-    file.println("type: raw");
-    file.print("frequency: ");
-    file.println((int)freqLocal * 1000);
-    file.print("data: ");
-    for (uint16_t i = 0; i < lenLocal; i++)
+    size_t sizeBefore = file.size(); // size at open; FILE_APPEND starts writing here
+    size_t written = 0;
+    written += file.printf("name: %s\ntype: raw\nfrequency: %u\nduty_cycle: 0.33\ndata:", nameBuf,
+                           (unsigned)p.freqKHz * 1000);
+    for (uint16_t i = 0; i < p.rawLen; i++)
     {
-        file.print(rawLocal[i]);
-        if (i + 1 < lenLocal)
-            file.print(' ');
+        written += file.printf(" %u", (unsigned)p.raw[i]);
     }
-    file.println();
-    file.println();
+    written += file.print("\n\n");
     file.close();
+
+    // A write is not done until it has been read back: reopen and compare the size.
+    File check = SD.open(path);
+    size_t sizeAfter = check ? check.size() : 0;
+    if (check)
+    {
+        check.close();
+    }
     unlockSD();
 
+    if (sizeAfter != sizeBefore + written)
+    {
+        setStatus("Save failed: short write");
+        setLearnPhase(LearnPhase::Error);
+        return false;
+    }
+
     setStatus("Saved " + String(nameBuf));
-    setLearnPhase(LEARN_SAVED);
+    setLearnPhase(LearnPhase::Saved);
     return true;
 }
 
-bool transmitCurrentPayload()
+// irTask only. Polls the receiver; on a decode, copies the signal into `out` and returns true.
+bool captureLearnSignal(IrPayload &out)
 {
-    uint16_t rawLocal[MAX_RAW_BUFFER];
-    uint16_t lenLocal = 0;
-    uint16_t freqLocal = 38;
-    String btnNameLocal = "None";
-    bool isParsed = false;
-    String protocolLocal = "";
-    uint32_t addressLocal = 0;
-    uint32_t commandLocal = 0;
-
-    lockState();
-    if (!shared.hasPayload)
+    if (!g_irrecv.decode(&g_irResults))
     {
-        unlockState();
-        setStatus("No payload to send");
         return false;
     }
 
-    isParsed = shared.payloadIsParsed;
-    btnNameLocal = shared.btnName;
-    if (isParsed)
-    {
-        protocolLocal = shared.parsedProtocol;
-        addressLocal = shared.parsedAddress;
-        commandLocal = shared.parsedCommand;
-    }
-    else
-    {
-        lenLocal = shared.rawLen;
-        freqLocal = shared.freqKHz;
-        for (uint16_t i = 0; i < lenLocal; i++)
-            rawLocal[i] = shared.raw[i];
-    }
-    unlockState();
-
-    markTransmitting(true);
-    setStatus("Sending " + btnNameLocal);
-
-    if (isParsed)
-    {
-        String p = protocolLocal;
-        p.toUpperCase();
-
-        uint8_t addr8 = (uint8_t)(addressLocal & 0xFF);
-        uint8_t cmd8 = (uint8_t)(commandLocal & 0xFF);
-        uint16_t addr16 = (uint16_t)(addressLocal & 0xFFFF);
-        uint16_t cmd16 = (uint16_t)(commandLocal & 0xFFFF);
-
-        if (p == "SAMSUNG32" || p == "SAMSUNG")
-        {
-            uint32_t data = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
-                            ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
-            irsend.sendSAMSUNG(data, 32, currentProtocolFrameRepeat);
-        }
-        else if (p == "NECEXT")
-        {
-            uint32_t data = ((uint32_t)cmd16 << 16) | (uint32_t)addr16;
-            irsend.sendNEC(data, 32, currentProtocolFrameRepeat);
-
-            if (universal_mode == UNIV_MODE_AGGRESSIVE)
-            {
-                vTaskDelay(pdMS_TO_TICKS(25));
-                uint32_t std = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
-                               ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
-                irsend.sendNEC(std, 32, currentProtocolFrameRepeat);
-            }
-        }
-        else if (p == "NEC")
-        {
-            uint32_t std = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) |
-                           ((uint32_t)cmd8 << 16) | ((uint32_t)(cmd8 ^ 0xFF) << 24);
-            irsend.sendNEC(std, 32, currentProtocolFrameRepeat);
-
-            if (universal_mode == UNIV_MODE_AGGRESSIVE)
-            {
-                vTaskDelay(pdMS_TO_TICKS(25));
-                uint32_t ext = ((uint32_t)cmd16 << 16) | (uint32_t)addr16;
-                irsend.sendNEC(ext, 32, currentProtocolFrameRepeat);
-            }
-        }
-        else if (p == "RC5")
-        {
-            uint16_t data = (uint16_t)(((addr8 & 0x1F) << 6) | (cmd8 & 0x3F));
-            irsend.sendRC5(data, 12, currentProtocolFrameRepeat);
-        }
-        else if (p == "RC6")
-        {
-            uint32_t data = ((uint32_t)(addr8 & 0xFF) << 8) | (uint32_t)(cmd8 & 0xFF);
-            irsend.sendRC6(data, 20, currentProtocolFrameRepeat);
-        }
-        else if (p == "SIRC" || p == "SONY")
-        {
-            uint16_t data = (uint16_t)((cmd8 & 0x7F) | ((addr8 & 0x1F) << 7));
-            irsend.sendSony(data, 12, currentProtocolFrameRepeat);
-        }
-        else
-        {
-            markTransmitting(false);
-            setStatus("Unsupported protocol");
-            return false;
-        }
-    }
-    else
-    {
-        if (lenLocal == 0)
-        {
-            markTransmitting(false);
-            setStatus("No raw payload");
-            return false;
-        }
-        irsend.sendRaw(rawLocal, lenLocal, freqLocal);
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(30));
-    markTransmitting(false);
-    setStatus("Sent " + btnNameLocal);
-    return true;
-}
-
-bool captureLearnSignal()
-{
-    if (!irrecv.decode(&results))
-        return false;
-
-    uint16_t localRaw[MAX_RAW_BUFFER];
+    // rawbuf[0] is the gap before the signal, so the signal is entries 1..rawlen-1, in ticks of
+    // kRawTick us, alternating mark, space, mark... A capture can contain the first frame plus
+    // repeat frames after a long gap. Keep the first frame only: stop at the first pulse the
+    // .ir loader would reject (0 or over kMaxPulseUs) or when the 2 s total is reached, so
+    // everything this function saves can be loaded and sent again.
     uint16_t localLen = 0;
-    uint16_t localFreq = 38;
-
-    uint16_t srcLen = results.rawlen;
-    if (srcLen > MAX_RAW_BUFFER)
-        srcLen = MAX_RAW_BUFFER;
-
-    for (uint16_t i = 1; i < srcLen; i++)
+    uint32_t totalUs = 0;
+    for (uint16_t i = 1; i < g_irResults.rawlen && localLen < kMaxRawBuffer; i++)
     {
-        localRaw[localLen++] = results.rawbuf[i] * kRawTick;
+        uint32_t us = (uint32_t)g_irResults.rawbuf[i] * kRawTick;
+        if (us == 0 || us > kMaxPulseUs || totalUs + us > kMaxSignalUs)
+        {
+            break;
+        }
+        totalUs += us;
+        out.raw[localLen++] = (uint16_t)us;
     }
+    if (localLen % 2 == 0 && localLen > 0)
+    {
+        localLen--; // a signal ends on a mark; drop a trailing space
+    }
+    out.rawLen = localLen;
+    out.freqKHz = kDefaultCarrierKHz;
+    out.isParsed = false;
+    out.btnName = "Captured";
 
-    String protocol = typeToString(results.decode_type, false);
+    String protocol = typeToString(g_irResults.decode_type, false);
     if (protocol.length() == 0)
+    {
         protocol = "UNKNOWN";
+    }
     protocol.toUpperCase();
 
-    String detail = "Bits:" + String(results.bits);
-    if (results.address != 0 || results.command != 0)
+    String detail = "Bits:" + String(g_irResults.bits);
+    if (g_irResults.address != 0 || g_irResults.command != 0)
     {
-        String addrHex = String((uint32_t)results.address, HEX);
-        String cmdHex = String((uint32_t)results.command, HEX);
+        String addrHex = String((uint32_t)g_irResults.address, HEX);
+        String cmdHex = String((uint32_t)g_irResults.command, HEX);
         addrHex.toUpperCase();
         cmdHex.toUpperCase();
         detail = "A:0x" + addrHex + " C:0x" + cmdHex;
     }
-    else if (results.value != 0)
+    else if (g_irResults.value != 0)
     {
-        String valueHex = uint64ToString(results.value, 16);
+        String valueHex = uint64ToString(g_irResults.value, 16);
         valueHex.toUpperCase();
-        detail = "V:0x" + valueHex + " B:" + String(results.bits);
+        detail = "V:0x" + valueHex + " B:" + String(g_irResults.bits);
     }
 
     Serial.println("=== LEARN CAPTURE ===");
-    Serial.println(resultToHumanReadableBasic(&results));
-    Serial.println(resultToSourceCode(&results));
+    Serial.println(resultToHumanReadableBasic(&g_irResults));
+    Serial.println(resultToSourceCode(&g_irResults));
 
-    irrecv.resume();
+    g_irrecv.resume();
 
     if (localLen == 0)
     {
         setLearnDetails("", "");
         setStatus("Capture failed");
-        setLearnPhase(LEARN_ERROR);
+        setLearnPhase(LearnPhase::Error);
         return false;
     }
 
-    setPayload(localRaw, localLen, localFreq, "Captured");
     setLearnDetails(protocol, detail);
     setStatus("Captured " + protocol);
-    setLearnPhase(LEARN_CAPTURED);
+    setLearnPhase(LearnPhase::Captured);
     return true;
+}
+
+// ---- Transmit --------------------------------------------------------------------------
+// NEC and Samsung put the least significant bit on air first, and a Flipper .ir file stores the
+// fields the same way. The IR library's senders shift out the MOST significant bit of their
+// argument first. So each frame is assembled in on-air order (first byte in the low bits) and
+// then reversed as a whole 32-bit value. Check: NEC address 0x04 command 0x08 must come out as
+// 0x20DF10EF, the LG TV power code.
+uint32_t necStandardFrame(uint8_t addr8, uint8_t cmd8)
+{
+    uint32_t onAir = ((uint32_t)addr8) | ((uint32_t)(addr8 ^ 0xFF) << 8) | ((uint32_t)cmd8 << 16) |
+                     ((uint32_t)(cmd8 ^ 0xFF) << 24);
+    return (uint32_t)reverseBits(onAir, 32);
+}
+
+uint32_t necExtendedFrame(uint16_t addr16, uint16_t cmd16)
+{
+    uint32_t onAir = (uint32_t)addr16 | ((uint32_t)cmd16 << 16);
+    return (uint32_t)reverseBits(onAir, 32);
+}
+
+// Samsung32 repeats the address byte (it does not invert it), then command and inverted command.
+uint32_t samsung32Frame(uint8_t addr8, uint8_t cmd8)
+{
+    uint32_t onAir = ((uint32_t)addr8) | ((uint32_t)addr8 << 8) | ((uint32_t)cmd8 << 16) |
+                     ((uint32_t)(cmd8 ^ 0xFF) << 24);
+    return (uint32_t)reverseBits(onAir, 32);
+}
+
+// Returns false for a protocol this firmware cannot encode.
+bool transmitParsed(const IrPayload &p, const IrTiming &t)
+{
+    String proto = p.protocol;
+    proto.toUpperCase();
+
+    uint8_t addr8 = (uint8_t)(p.address & 0xFF);
+    uint8_t cmd8 = (uint8_t)(p.command & 0xFF);
+    uint16_t addr16 = (uint16_t)(p.address & 0xFFFF);
+    uint16_t cmd16 = (uint16_t)(p.command & 0xFFFF);
+
+    if (proto == "SAMSUNG32" || proto == "SAMSUNG")
+    {
+        g_irsend.sendSAMSUNG(samsung32Frame(addr8, cmd8), 32, t.frameRepeat);
+    }
+    else if (proto == "NECEXT")
+    {
+        g_irsend.sendNEC(necExtendedFrame(addr16, cmd16), 32, t.frameRepeat);
+        if (t.aggressive)
+        {
+            vTaskDelay(pdMS_TO_TICKS(25));
+            g_irsend.sendNEC(necStandardFrame(addr8, cmd8), 32, t.frameRepeat);
+        }
+    }
+    else if (proto == "NEC")
+    {
+        g_irsend.sendNEC(necStandardFrame(addr8, cmd8), 32, t.frameRepeat);
+        if (t.aggressive)
+        {
+            vTaskDelay(pdMS_TO_TICKS(25));
+            g_irsend.sendNEC(necExtendedFrame(addr16, cmd16), 32, t.frameRepeat);
+        }
+    }
+    else if (proto == "RC5")
+    {
+        uint16_t data = (uint16_t)(((addr8 & 0x1F) << 6) | (cmd8 & 0x3F));
+        g_irsend.sendRC5(data, 12, t.frameRepeat);
+    }
+    else if (proto == "RC6")
+    {
+        uint32_t data = ((uint32_t)addr8 << 8) | (uint32_t)cmd8;
+        g_irsend.sendRC6(data, 20, t.frameRepeat);
+    }
+    else if (proto == "SIRC" || proto == "SONY")
+    {
+        // encodeSony() does the bit reversal. Sony receivers need the frame at least 3 times.
+        uint16_t repeats = t.frameRepeat > kSonyMinRepeat ? t.frameRepeat : kSonyMinRepeat;
+        g_irsend.sendSony(g_irsend.encodeSony(12, cmd8, addr8), 12, repeats);
+    }
+    else
+    {
+        return false;
+    }
+    return true;
+}
+
+// Sends exactly the payload it is given. irTask uses this with its own copy, so nothing
+// the UI loads into g_shared between load and send can change what goes out the LED.
+bool transmitPayload(const IrPayload &p, const IrTiming &t)
+{
+    markTransmitting(true, p.btnName);
+    setStatus("Sending " + p.btnName);
+
+    bool ok;
+    const char *failure = nullptr;
+    if (p.isParsed)
+    {
+        ok = transmitParsed(p, t);
+        failure = "Unsupported protocol";
+    }
+    else
+    {
+        ok = p.rawLen > 0;
+        failure = "No raw payload";
+        if (ok)
+        {
+            g_irsend.sendRaw(p.raw, p.rawLen, p.freqKHz);
+        }
+    }
+
+    if (ok)
+    {
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
+    markTransmitting(false, "");
+    setStatus(ok ? "Sent " + p.btnName : String(failure));
+    return ok;
 }
