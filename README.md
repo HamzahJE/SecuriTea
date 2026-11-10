@@ -70,6 +70,11 @@ A universal profile is an ordinary `.ir` file whose command names are the group 
 
 ## `.ir` file format
 
+Ready-made files: [Flipper-IRDB](https://github.com/Lucaslhm/Flipper-IRDB) holds thousands of
+remotes in this format, and the format itself is documented in the
+[Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware) repository.
+
+
 ```
 name: Power
 type: raw
