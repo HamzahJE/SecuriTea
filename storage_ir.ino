@@ -74,22 +74,59 @@ bool ensureSdMountedLocked()
 }
 
 // Opens a path for reading. If the open fails it is tried once more after a short pause,
-// which covers a card that was briefly busy. There is deliberately no reset and no remount:
-// a failed open is reported to the caller, and the next thing the user does simply tries
-// again. Caller holds the SD lock.
+// which covers a card that was briefly busy.
+//
+// If the card itself has stopped answering (the root folder cannot be opened either), the
+// card is left alone for kSdRecoveryWaitMs and then mounted again, at most once every
+// kSdRecoveryMinIntervalMs. This is the one place a mounted card is ever touched, and it is
+// needed because of a gap in the SD driver: after a card has reset itself it answers data
+// commands with "illegal command", and the driver only re-initialises a card that answers
+// with silence. Without this, one episode leaves the card unusable until the board reboots.
+// The wait matters: a card asked to restart while it is still busy only fails again.
+// Caller holds the SD lock.
 File openSdForRead(const String &path)
 {
+    static unsigned long lastRecoveryMs = 0;
+    static bool recoveredBefore = false;
+
     if (!ensureSdMountedLocked())
     {
         return File();
     }
     File file = SD.open(path);
-    if (!file)
+    if (file)
     {
-        delay(kSdOpenRetryDelayMs);
-        file = SD.open(path);
+        return file;
     }
-    return file;
+    delay(kSdOpenRetryDelayMs);
+    file = SD.open(path);
+    if (file)
+    {
+        return file;
+    }
+
+    File root = SD.open("/");
+    if (root)
+    {
+        root.close();
+        return File(); // the card is fine; this path simply does not exist
+    }
+
+    unsigned long now = millis();
+    if (recoveredBefore && now - lastRecoveryMs < kSdRecoveryMinIntervalMs)
+    {
+        return File();
+    }
+    recoveredBefore = true;
+    lastRecoveryMs = now;
+
+    Serial.printf("[sd] card not answering while opening %s; leaving it alone for %lu ms\n", path.c_str(),
+                  kSdRecoveryWaitMs);
+    delay(kSdRecoveryWaitMs);
+    SD.end();
+    g_sdMounted = SD.begin(board::kSdCsPin, g_sdSpi, board::kSdSpiHz);
+    Serial.printf("[sd] mounted again: %s\n", g_sdMounted ? "yes" : "no");
+    return g_sdMounted ? SD.open(path) : File();
 }
 
 void rebuildDirectoryCache(const String &path)
