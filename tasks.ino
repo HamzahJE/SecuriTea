@@ -49,6 +49,8 @@ void uiTask(void *pvParameters)
     App &app = g_launcher.current();
     UiSnapshot lastDrawn;
     unsigned long lastDrawMs = 0;
+    String lastStatus;
+    unsigned long statusChangedMs = 0;
     g_lastInputMs = millis();
 
     while (true)
@@ -73,6 +75,14 @@ void uiTask(void *pvParameters)
         UiSnapshot snap = snapshotUi();
         sleepDisplayIfIdle(now, snap, app);
 
+        // Most screens have no status line, so a changed status is shown in the footer for a
+        // moment on every screen. The heartbeat redraw takes it away again.
+        if (snap.status != lastStatus)
+        {
+            lastStatus = snap.status;
+            statusChangedMs = now;
+        }
+
         // Draw when something changed, or when kUiHeartbeatMs has passed (the footer marquee
         // needs the heartbeat). With 33 this is the original's redraw-every-frame behaviour.
         bool due = app.isDirty() || uiSnapshotChanged(snap, lastDrawn) || now - lastDrawMs >= kUiHeartbeatMs;
@@ -80,6 +90,7 @@ void uiTask(void *pvParameters)
         {
             UiModel model;
             app.buildModel(model, snap);
+            model.statusFresh = snap.status.length() > 0 && now - statusChangedMs < kStatusShowMs;
             drawScreen(model);
             lastDrawn = snap;
             lastDrawMs = now;

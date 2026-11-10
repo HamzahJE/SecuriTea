@@ -48,6 +48,7 @@ constexpr int kJoyHighThreshold = 3000;  // ADC counts; above = stick pushed the
 constexpr unsigned long kJoyRepeatMs = 250;
 constexpr unsigned long kUiFrameMs = 33;
 constexpr unsigned long kUiHeartbeatMs = 250;   // redraw at least this often (the footer marquee needs it)
+constexpr unsigned long kStatusShowMs = 2500;   // a changed status line replaces the footer for this long
 constexpr unsigned long kIdleDisplayOffMs = 180000;
 constexpr unsigned long kSdPowerSettleMs = 1000; // card power-up to the mount, the original firmware's value
 constexpr int kSdBootMountTries = 6;             // boot: SD.begin attempts before giving up (card may be settling)
@@ -292,4 +293,5 @@ struct UiModel
     bool deletePending = false;
 
     UiSnapshot shared;          // the fields that come from the other task
+    bool statusFresh = false;   // shared.status changed less than kStatusShowMs ago: show it in the footer
 };

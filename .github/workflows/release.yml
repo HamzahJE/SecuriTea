@@ -56,6 +56,9 @@ jobs:
           cp build/securitea.ino.bin             "release/securitea-${GITHUB_REF_NAME}.app.bin"
           cp build/securitea.ino.bootloader.bin  "release/securitea-${GITHUB_REF_NAME}.bootloader.bin"
           cp build/securitea.ino.partitions.bin  "release/securitea-${GITHUB_REF_NAME}.partitions.bin"
+          # boot_app0 is the tiny OTA-data image every Arduino ESP32 flash layout needs at 0xe000;
+          # it ships with the core, not with the sketch.
+          cp "$(find ~/.arduino15 -name boot_app0.bin | head -1)" "release/securitea-${GITHUB_REF_NAME}.boot_app0.bin"
           ls -l release
 
       - name: Publish the GitHub Release
@@ -66,8 +69,9 @@ jobs:
           body: |
             Flash from the browser: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
 
-            `securitea-${{ github.ref_name }}.merged.bin` is the whole flash image (bootloader, partition table and
-            app); write it at offset 0x0 with esptool. The separate files are for tools that want them apart.
+            `securitea-${{ github.ref_name }}.merged.bin` is the whole flash image (bootloader, partition table,
+            OTA data and app, padded to 8 MB); write it at offset 0x0 with esptool. The separate files are the
+            same image in parts: bootloader at 0x0, partitions at 0x8000, boot_app0 at 0xe000, app at 0x10000.
 
       - name: Assemble the web flasher
         working-directory: securitea
@@ -75,7 +79,10 @@ jobs:
           mkdir -p site
           cp web/index.html site/
           sed "s/__VERSION__/${GITHUB_REF_NAME}/g" web/manifest.json > site/manifest.json
-          cp "release/securitea-${GITHUB_REF_NAME}.merged.bin" site/
+          cp release/securitea-${GITHUB_REF_NAME}.bootloader.bin \
+             release/securitea-${GITHUB_REF_NAME}.partitions.bin \
+             release/securitea-${GITHUB_REF_NAME}.boot_app0.bin \
+             release/securitea-${GITHUB_REF_NAME}.app.bin site/
           ls -l site
 
       - name: Upload the web flasher

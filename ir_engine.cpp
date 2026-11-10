@@ -84,11 +84,30 @@ bool sendParsed(const IrPayload &p, const IrTiming &t)
         uint32_t data = ((uint32_t)addr8 << 8) | (uint32_t)cmd8;
         g_sender.sendRC6(data, 20, t.frameRepeat);
     }
-    else if (proto == "SIRC" || proto == "SONY")
+    else if (proto == "SIRC" || proto == "SONY" || proto == "SIRC15" || proto == "SIRC20")
     {
         // encodeSony() does the bit reversal. Sony receivers need the frame at least 3 times.
+        // Flipper: SIRC = 5 address bits, SIRC15 = 8, SIRC20 = 5 plus an 8-bit extension that
+        // Flipper stores in the address above bit 4.
         uint16_t repeats = t.frameRepeat > kSonyMinRepeat ? t.frameRepeat : kSonyMinRepeat;
-        g_sender.sendSony(g_sender.encodeSony(12, cmd8, addr8), 12, repeats);
+        uint32_t frame;
+        uint16_t bits;
+        if (proto == "SIRC15")
+        {
+            bits = 15;
+            frame = g_sender.encodeSony(15, cmd8, addr8);
+        }
+        else if (proto == "SIRC20")
+        {
+            bits = 20;
+            frame = g_sender.encodeSony(20, cmd8, (uint16_t)(addr16 & 0x1F), (uint16_t)((addr16 >> 5) & 0xFF));
+        }
+        else
+        {
+            bits = 12;
+            frame = g_sender.encodeSony(12, cmd8, addr8);
+        }
+        g_sender.sendSony(frame, bits, repeats);
     }
     else
     {

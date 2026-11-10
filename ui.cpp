@@ -10,6 +10,12 @@ namespace
 const String kMainMenu[kMainMenuLen] = {"Universal Remote", "File Browser", "Learn New"};
 const String kUnivMenu[kUnivMenuLen] = {"TVs", "ACs", "Projectors", "Audio"};
 
+// The footer shows a freshly changed status line instead of the key hints for a moment.
+String footerFor(const UiModel &m, const char *hints)
+{
+    return m.statusFresh ? m.shared.status : String(hints);
+}
+
 void drawFileBrowserScreen(const UiModel &m)
 {
     String title = "Path: " + m.browserPath;
@@ -18,13 +24,13 @@ void drawFileBrowserScreen(const UiModel &m)
         g_display.clear();
         drawHeader(title, m.browserFilterLabel);
         g_display.drawString(0, kUiLine1Y + 4, "(No items)");
-        drawFooter("[>]Filter [<]Clr/Back");
+        drawFooter(footerFor(m, "[>]Filter [<]Clr/Back"));
         g_display.display();
         return;
     }
 
     drawMenu(title, m.browserRows, m.browserShown, m.menuIndex - m.browserWindowStart,
-             "[>]Filter [BTN]Open [<]Clr/Back", m.browserFilterLabel);
+             footerFor(m, "[>]Filter [BTN]Open [<]Clr/Back"), m.browserFilterLabel);
 }
 
 void drawUniversalRemoteScreen(const UiModel &m)
@@ -36,12 +42,13 @@ void drawUniversalRemoteScreen(const UiModel &m)
         drawHeader(title, m.universalBadge);
         g_display.drawString(0, kUiLine1Y + 4, "No commands found");
         g_display.drawString(0, kUiLine2Y + 4, "File: " + m.univProfilePath);
-        drawFooter("[<] Back");
+        drawFooter(footerFor(m, "[<] Back"));
         g_display.display();
         return;
     }
 
-    drawMenu(title, m.univItems, m.univCount, m.menuIndex, "[<] Back | [BTN] Select", m.universalBadge, false);
+    drawMenu(title, m.univItems, m.univCount, m.menuIndex, footerFor(m, "[<] Back | [BTN] Select"), m.universalBadge,
+             false);
     if (m.shared.univSending)
     {
         drawUniversalProgressPopup(m.shared.univProgressName, m.shared.univProgressCurrent,
@@ -71,11 +78,11 @@ void drawRemoteViewScreen(const UiModel &m)
     }
     else if (m.deleteMode)
     {
-        drawFooter(m.deleteArmed ? "[BTN] Confirm delete" : "[v^]Cmd [>]Mode [BTN]Delete");
+        drawFooter(footerFor(m, m.deleteArmed ? "[BTN] Confirm delete" : "[v^]Cmd [>]Mode [BTN]Delete"));
     }
     else
     {
-        drawFooter("[v^]Cmd [>]Mode [BTN]Send");
+        drawFooter(footerFor(m, "[v^]Cmd [>]Mode [BTN]Send"));
     }
     g_display.display();
 }
@@ -130,11 +137,12 @@ void drawScreen(const UiModel &m)
     switch (m.state)
     {
         case AppState::MainMenu:
-            drawMenu("SecuriTea OS", kMainMenu, kMainMenuLen, m.menuIndex);
+            drawMenu("SecuriTea OS", kMainMenu, kMainMenuLen, m.menuIndex, footerFor(m, "[<] Back | [BTN] Select"));
             break;
         case AppState::UniversalMenu:
             drawMenu("Universal Remote", kUnivMenu, kUnivMenuLen, m.menuIndex,
-                     "[v^]Scroll [>]Mode [BTN]Toggle/Pick [<]Back", m.universalBadge, true, m.headerModeSelected);
+                     footerFor(m, "[v^]Scroll [>]Mode [BTN]Toggle/Pick [<]Back"), m.universalBadge, true,
+                     m.headerModeSelected);
             break;
         case AppState::FileBrowser:
             drawFileBrowserScreen(m);
