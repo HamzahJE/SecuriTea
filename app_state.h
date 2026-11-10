@@ -11,6 +11,14 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 
+// ---- Version -------------------------------------------------------------------------
+// The release workflow passes the git tag as -DSECURITEA_VERSION="v1.2.3"; a local build says
+// "dev". A macro is the only way a build flag can reach the code, hence the one #define here.
+#ifndef SECURITEA_VERSION
+#define SECURITEA_VERSION "dev"
+#endif
+constexpr const char *kFirmwareVersion = SECURITEA_VERSION;
+
 // ---- Capacity limits -----------------------------------------------------------------
 constexpr int kMaxRawBuffer = 500;        // pulses per raw signal
 constexpr int kMaxCommandsPerFile = 1000; // approved cap; longer files are truncated with a notice

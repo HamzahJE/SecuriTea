@@ -1,0 +1,95 @@
+# Release: push a tag like v1.0.0 and this workflow
+#   1. builds the firmware with the pinned core and libraries, with the tag as its version string;
+#   2. publishes a GitHub Release carrying the .bin files;
+#   3. publishes the web flasher page (docs in web/, plus the firmware) to GitHub Pages, so the
+#      board can be flashed from a browser without any tools installed.
+#
+# One-time setup on GitHub: Settings > Pages > Source: "GitHub Actions".
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build and publish the release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: securitea
+
+      - name: Install arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Cache the ESP32 core and libraries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/.cache/arduino
+          key: arduino-${{ runner.os }}-${{ hashFiles('securitea/sketch.yaml') }}
+
+      - name: Compile with the tag as the version string
+        working-directory: securitea
+        run: |
+          arduino-cli compile --profile heltec_v3 --warnings default --build-path build \
+            --build-property "compiler.cpp.extra_flags=-DSECURITEA_VERSION=\"${GITHUB_REF_NAME}\"" . 2>&1 | tee build.log
+          if grep "warning:" build.log | grep -v "/.arduino15/" | grep -q .; then
+            echo "::error::compiler warnings in project files are not allowed"
+            exit 1
+          fi
+          grep -E "Sketch uses|Global variables" build.log
+
+      - name: Name the release files
+        working-directory: securitea
+        run: |
+          mkdir -p release
+          cp build/securitea.ino.merged.bin      "release/securitea-${GITHUB_REF_NAME}.merged.bin"
+          cp build/securitea.ino.bin             "release/securitea-${GITHUB_REF_NAME}.app.bin"
+          cp build/securitea.ino.bootloader.bin  "release/securitea-${GITHUB_REF_NAME}.bootloader.bin"
+          cp build/securitea.ino.partitions.bin  "release/securitea-${GITHUB_REF_NAME}.partitions.bin"
+          ls -l release
+
+      - name: Publish the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: securitea/release/*
+          generate_release_notes: true
+          body: |
+            Flash from the browser: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+
+            `securitea-${{ github.ref_name }}.merged.bin` is the whole flash image (bootloader, partition table and
+            app); write it at offset 0x0 with esptool. The separate files are for tools that want them apart.
+
+      - name: Assemble the web flasher
+        working-directory: securitea
+        run: |
+          mkdir -p site
+          cp web/index.html site/
+          sed "s/__VERSION__/${GITHUB_REF_NAME}/g" web/manifest.json > site/manifest.json
+          cp "release/securitea-${GITHUB_REF_NAME}.merged.bin" site/
+          ls -l site
+
+      - name: Upload the web flasher
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: securitea/site
+
+  pages:
+    name: Deploy the web flasher to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

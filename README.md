@@ -107,7 +107,12 @@ protocols supported for sending: NEC, NECext, Samsung32, RC5, RC6, SIRC. Files a
 
 ## Build and flash
 
-Board, core and library versions are pinned in `sketch.yaml`.
+**No tools needed:** open the web flasher at <https://hamzahje.github.io/SecuriTea/> in Chrome or
+Edge, connect the board over USB and press Connect. It writes the latest release. The same files
+are attached to every [GitHub Release](https://github.com/HamzahJE/SecuriTea/releases); the
+`.merged.bin` is the whole flash image, written at offset 0 with esptool.
+
+**From source:** board, core and library versions are pinned in `sketch.yaml`.
 
 ```
 arduino-cli compile --build-path build .
@@ -115,7 +120,11 @@ arduino-cli upload -p /dev/cu.usbserial-0001 --fqbn esp32:esp32:heltec_wifi_lora
 ```
 
 Or open the folder in the Arduino IDE, choose "Heltec WiFi LoRa 32 (V3)" and upload.
-Serial at 115200 prints the reset reason at boot and heap and stack headroom every 5 s.
+Serial at 115200 prints the firmware version and the reset reason at boot.
+
+**Making a release:** push a tag such as `v1.0.0`. The release workflow builds the firmware with that
+version string, attaches the binaries to a GitHub Release and updates the web flasher. One-time
+setup: Settings, Pages, Source "GitHub Actions".
 
 ## Responsible use
 

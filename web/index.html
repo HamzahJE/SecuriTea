@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SecuriTea flasher</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.6rem; }
+    ol { padding-left: 1.2rem; }
+    .note { opacity: .75; font-size: .9rem; }
+    esp-web-install-button { display: inline-block; margin: 1rem 0; }
+  </style>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10.1.1/dist/web/install-button.js?module"></script>
+</head>
+<body>
+  <h1>SecuriTea firmware</h1>
+  <p>Flashes the latest release onto a Heltec WiFi LoRa 32 V3 from this page. Works in Chrome and
+  Edge on a computer (the browser needs Web Serial, which phones and Firefox do not have).</p>
+  <ol>
+    <li>Connect the board with a USB data cable.</li>
+    <li>Press Connect and choose the board's serial port.</li>
+    <li>If the port does not appear, hold the PRG button, tap RST, release PRG, and try again.</li>
+  </ol>
+  <esp-web-install-button manifest="manifest.json">
+    <span slot="unsupported">This browser has no Web Serial. Use Chrome or Edge on a computer.</span>
+  </esp-web-install-button>
+  <p class="note">The image written is the whole flash: bootloader, partition table and app. After
+  flashing, press RST once if the board does not restart by itself. Source, pin table and the .ir
+  file format: <a href="https://github.com/HamzahJE/SecuriTea">github.com/HamzahJE/SecuriTea</a>.</p>
+</body>
+</html>

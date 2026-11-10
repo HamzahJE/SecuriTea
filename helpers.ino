@@ -191,7 +191,8 @@ const char *resetReasonName(esp_reset_reason_t reason)
 void logBootDiagnostics(void)
 {
     esp_reset_reason_t reason = esp_reset_reason();
-    Serial.printf("[boot] SecuriTea  reset reason: %s (%d)\n", resetReasonName(reason), (int)reason);
+    Serial.printf("[boot] SecuriTea %s  reset reason: %s (%d)\n", kFirmwareVersion, resetReasonName(reason),
+                  (int)reason);
     Serial.printf("[boot] heap free=%u largest block=%u  chip=%s rev%d  cpu=%u MHz\n", ESP.getFreeHeap(),
                   ESP.getMaxAllocHeap(), ESP.getChipModel(), ESP.getChipRevision(), ESP.getCpuFreqMHz());
 }
