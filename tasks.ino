@@ -9,7 +9,6 @@
 bool g_uiDirty = true;             // something changed, draw on the next frame
 bool g_displayAsleep = false;
 unsigned long g_lastInputMs = 0;
-unsigned long g_lastJoyMs = 0;
 bool g_deleteArmed = false;        // first press in Delete mode arms, second press deletes
 unsigned long g_deleteArmedMs = 0;
 bool g_deletePending = false;      // a delete is queued or running; its result has not arrived
@@ -85,30 +84,8 @@ void drainIrEvents()
 }
 
 // ---- Input -----------------------------------------------------------------------------
-JoyInput readJoystick(unsigned long now, bool &lastBtnState)
-{
-    JoyInput in;
-    int x = analogRead(board::kJoyXPin);
-    int y = analogRead(board::kJoyYPin);
-    bool btn = digitalRead(board::kJoyButtonPin);
-
-    if (now - g_lastJoyMs > kJoyRepeatMs)
-    {
-        in.up = y < kJoyLowThreshold;
-        in.down = y > kJoyHighThreshold;
-        in.right = x > kJoyHighThreshold;
-        in.left = x < kJoyLowThreshold;
-        if (in.up || in.down || in.left || in.right)
-        {
-            g_lastJoyMs = now;
-        }
-    }
-
-    in.press = (btn == LOW && lastBtnState == HIGH);
-    lastBtnState = btn;
-    return in;
-}
-
+// The joystick itself lives in input.h/.cpp (class Joystick); this section maps its events
+// onto the current screen.
 int menuLengthForState()
 {
     switch (g_state)
@@ -649,8 +626,8 @@ void drawScreen(const UiSnapshot &snap)
 // ---- uiTask --------------------------------------------------------------------------------
 void uiTask(void *pvParameters)
 {
-    pinMode(board::kJoyButtonPin, INPUT_PULLUP);
-    bool lastBtnState = HIGH;
+    Joystick joystick; // input module: owns the pins, the debounce and the repeat timing
+    joystick.begin();
     AppState previousState = g_state;
     UiSnapshot lastDrawn;
     unsigned long lastDrawMs = 0;
@@ -662,7 +639,7 @@ void uiTask(void *pvParameters)
 
         drainIrEvents();
 
-        JoyInput in = readJoystick(now, lastBtnState);
+        JoyInput in = joystick.read(now);
         if (in.any())
         {
             bool wasAsleep = g_displayAsleep;

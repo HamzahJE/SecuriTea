@@ -22,8 +22,14 @@ constexpr int kMaxNameLen = 32;           // fixed-size name copies carried in q
 constexpr int kMaxLineLen = 256;          // header lines of a .ir file; "data:" lines stream past this
 
 // ---- .ir validation (approved behaviour) --------------------------------------------
-constexpr uint32_t kMaxPulseUs = 20000;    // a single mark or space longer than this is rejected
-constexpr uint32_t kMaxSignalUs = 2000000; // a raw signal longer than 2 s is rejected
+// Raw timings are sent through a 16-bit microsecond value, so 65535 us is the longest mark or
+// space the hardware can produce. Flipper raw files contain gaps of 40-100 ms between repeated
+// frames; a value above the limit is shortened to the limit, never rejected (an earlier 20 ms
+// limit refused files that work). Only a 0 is rejected: it would swap every later mark and space.
+constexpr uint32_t kMaxPulseUs = 65535;
+// Marks are sent in a busy loop on core 0, whose watchdog fires after 5 s of starvation, so the
+// whole signal must stay well under that.
+constexpr uint32_t kMaxSignalUs = 4000000;
 constexpr uint16_t kMinCarrierKHz = 10;
 constexpr uint16_t kMaxCarrierKHz = 56;
 constexpr uint16_t kDefaultCarrierKHz = 38;
@@ -38,6 +44,8 @@ constexpr unsigned long kUiHeartbeatMs = 250;   // redraw at least this often; 3
                                                 // timing changes, under board test since 2026-11-09)
 constexpr unsigned long kIdleDisplayOffMs = 180000;
 constexpr unsigned long kSdPowerSettleMs = 1000; // card power-up to the mount, the original firmware's value
+constexpr int kSdBootMountTries = 6;             // boot: SD.begin attempts before giving up (card may be settling)
+constexpr unsigned long kSdBootMountRetryMs = 2000; // boot: quiet time between those attempts
 constexpr unsigned long kSdLateMountRetryMs = 3000; // if the boot mount failed: retry on demand, this often at most
 constexpr unsigned long kSdOpenRetryDelayMs = 30;   // pause before the single second try of a failed open
 constexpr unsigned long kIrPollMs = 15;          // irTask polls the IR receiver this often while learning
