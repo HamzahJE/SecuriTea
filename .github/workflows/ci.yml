@@ -1,0 +1,72 @@
+# Continuous integration: every push and pull request
+#   1. builds the firmware with the exact core and library versions pinned in sketch.yaml,
+#      and fails on any compiler warning in the project's own files;
+#   2. runs the host tests of the .ir parser under AddressSanitizer and UBSan;
+#   3. runs cppcheck with the same options as the /lint command.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  firmware:
+    name: Firmware build (heltec_v3 profile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Cache the ESP32 core and libraries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/.cache/arduino
+          key: arduino-${{ runner.os }}-${{ hashFiles('sketch.yaml') }}
+
+      - name: Compile
+        run: |
+          arduino-cli compile --profile heltec_v3 --warnings all --build-path build . 2>&1 | tee build.log
+          if grep -q "warning:" build.log; then
+            echo "::error::compiler warnings are not allowed"
+            exit 1
+          fi
+          grep -E "Sketch uses|Global variables" build.log
+
+      - name: Keep the binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: securitea-firmware
+          path: |
+            build/securitea.ino.bin
+            build/securitea.ino.bootloader.bin
+            build/securitea.ino.partitions.bin
+          if-no-files-found: error
+
+  host-tests:
+    name: Host tests (ir_file parser, ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run
+        run: make -C tests/host
+
+  lint:
+    name: cppcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: Run
+        run: |
+          cppcheck --language=c++ --std=c++17 --quiet --force --inline-suppr \
+            --enable=warning,style,performance,portability \
+            --suppress=missingIncludeSystem --suppress=missingInclude --suppress=unusedFunction \
+            --suppress=unusedStructMember --error-exitcode=1 \
+            --template='{file}:{line}: {severity} [{id}] {message}' \
+            -DARDUINO=10819 -DESP32 -DARDUINO_ARCH_ESP32 -DCORE_DEBUG_LEVEL=0 \
+            -I . *.ino *.h *.cpp

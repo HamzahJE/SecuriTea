@@ -117,6 +117,16 @@ Serial at 115200 prints the reset reason at boot and heap and stack headroom eve
 Only send IR to equipment you own or are allowed to control. The universal profiles can
 switch off displays in public places; that is someone else's property.
 
+## Tests and continuous integration
+
+- `make -C tests/host` builds and runs the `.ir` parser tests on your computer, under
+  AddressSanitizer and UndefinedBehaviorSanitizer. No board needed. The tests cover the bounded
+  line reader, raw and parsed commands, the validation limits, the copy routine used by delete,
+  and a fuzzer that feeds the parser random input.
+- GitHub Actions (`.github/workflows/ci.yml`) runs on every push: the firmware build with the
+  pinned core and library versions from `sketch.yaml` (zero warnings allowed in project files,
+  binaries kept as an artifact), the host tests, and cppcheck.
+
 ## License
 
 MIT, see `LICENSE`.
