@@ -45,8 +45,10 @@ All pin assignments live in `board_config.h`:
 | `ir_engine.h/.cpp` | the IR hardware: LED driver, receiver, protocol frames |
 | `ui.h/.cpp` | the screens, drawn from a `UiModel` |
 | `input.h/.cpp` | the joystick |
-| `storage_ir.ino` | glue: turns storage and IR results into status text and the UI's view |
-| `tasks.ino` | `uiTask` (input, state, screen model) and `irTask` (send, delete, learn jobs) |
+| `app.h`, `launcher.cpp` | the `App` interface and the launcher that runs the current app |
+| `ir_app.h/.cpp` | the infrared app: menus, browser, remote view, learn (all its state is inside) |
+| `app_glue.h`, `storage_ir.ino` | what apps may call in the sketch; storage and IR results turned into status text |
+| `tasks.ino` | `uiTask` (drives the current app) and `irTask` (send, delete, learn jobs) |
 | `helpers.ino` | shared-state setters, cancel counter, queue helpers, diagnostics |
 | `ui_layout.h/.cpp` | OLED drawing primitives |
 
