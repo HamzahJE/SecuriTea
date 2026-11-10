@@ -50,8 +50,7 @@ const char *loadFlipperCommandReason(const String &path, uint32_t offset, IrPayl
         setStatus(reason);
         return reason;
     }
-    setStatus("Loaded: " + out.btnName + (out.isParsed ? " (parsed)" : ""));
-    return nullptr;
+    return nullptr; // the Btn line shows the name; no status message for a routine load
 }
 
 bool loadFlipperCommandAt(const String &path, uint32_t offset, IrPayload &out)

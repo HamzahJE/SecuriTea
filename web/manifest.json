@@ -6,7 +6,10 @@
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        { "path": "securitea-__VERSION__.merged.bin", "offset": 0 }
+        { "path": "securitea-__VERSION__.bootloader.bin", "offset": 0 },
+        { "path": "securitea-__VERSION__.partitions.bin", "offset": 32768 },
+        { "path": "securitea-__VERSION__.boot_app0.bin", "offset": 57344 },
+        { "path": "securitea-__VERSION__.app.bin", "offset": 65536 }
       ]
     }
   ]
