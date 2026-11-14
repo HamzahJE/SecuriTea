@@ -10,7 +10,8 @@ Features:
 - Universal remote: send every "Power" (or any other group) across a profile of many brands
 - File browser: open any `.ir` file on the SD card, send one command, loop all of them, or delete one
 - Learn mode: capture a signal from a real remote and append it to `/captures/learned.ir`
-- 128x64 OLED and joystick interface, screen sleeps after 3 min idle
+- 128x64 OLED and joystick interface; status messages appear in the footer; screen sleeps after 3 min idle
+- Flash from a browser, no tools to install: <https://hamzahje.github.io/SecuriTea/>
 
 ## Hardware
 
@@ -91,9 +92,9 @@ command: 08 00 00 00
 
 Raw signals are validated on load: no mark or space may be 0, a value above 65535 us is
 shortened to 65535 us (the longest the sender can time), the whole signal must be at most 4 s
-and at most 500 values, and the carrier between 10 and 56 kHz. Parsed
-protocols supported for sending: NEC, NECext, Samsung32, RC5, RC6, SIRC. Files are capped at
-1000 commands.
+and at most 500 values, and the carrier between 10 and 56 kHz. A command that fails validation
+shows the reason in place of its name. Parsed protocols supported for sending: NEC, NECext,
+Samsung32, RC5, RC6, SIRC, SIRC15, SIRC20. Files are capped at 1000 commands.
 
 ## Controls
 
@@ -119,12 +120,28 @@ arduino-cli compile --build-path build .
 arduino-cli upload -p /dev/cu.usbserial-0001 --fqbn esp32:esp32:heltec_wifi_lora_32_V3 --input-dir build .
 ```
 
-Or open the folder in the Arduino IDE, choose "Heltec WiFi LoRa 32 (V3)" and upload.
+Or open the folder in the Arduino IDE, choose "Heltec WiFi LoRa 32 (V3)" and upload. The IDE
+compiles every file in the folder; `sketch.yaml` is only read by arduino-cli.
 Serial at 115200 prints the firmware version and the reset reason at boot.
 
 **Making a release:** push a tag such as `v1.0.0`. The release workflow builds the firmware with that
 version string, attaches the binaries to a GitHub Release and updates the web flasher. One-time
-setup: Settings, Pages, Source "GitHub Actions".
+setup on GitHub: Settings, Pages, Source "GitHub Actions"; and Settings, Environments, `github-pages`,
+allow deployments from tags `v*`.
+
+## Troubleshooting
+
+- **Empty file browser or "File missing" right after flashing.** During an upload the board's pins
+  float for twenty seconds and a card with no pull-up on chip select can be left confused. Press RST
+  once. A 10 k resistor from the SD module's CS pin to 3V3 prevents it.
+- **"Waiting for SD card" at boot.** The card needs more than a second to start; the firmware retries
+  for about twelve seconds. If it never mounts, reseat the card and the module's wires.
+- **"SD card not answering, retrying" while in use.** The firmware leaves the card alone for a few
+  seconds, restarts it once and keeps trying every five seconds; use the device again when it says
+  "SD card is back". A card that does this often is failing even if a computer still reads it.
+  Swapping the card is the first test.
+- **A TV ignores a parsed command.** Try the same remote's raw file if there is one, and report the
+  protocol name from the file.
 
 ## Responsible use
 
